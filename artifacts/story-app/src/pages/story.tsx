@@ -21,9 +21,8 @@ import {
   Pencil,
   Check,
   X,
-  Mic,
-  MicOff,
   Volume2,
+  Mic,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -34,49 +33,116 @@ export default function Story() {
   const { settings, updateSettings } = useSettings();
   const queryClient = useQueryClient();
 
-  const { data: conversation, isLoading: isLoadingConv } = useGetOpenrouterConversation(id, {
-    query: { enabled: !!id },
-  });
+  const { data: conversation, isLoading: isLoadingConv } =
+    useGetOpenrouterConversation(id, { query: { enabled: !!id } });
 
-  const { data: messages, isLoading: isLoadingMsgs } = useListOpenrouterMessages(id, {
-    query: { enabled: !!id },
-  });
+  const { data: messages, isLoading: isLoadingMsgs } =
+    useListOpenrouterMessages(id, { query: { enabled: !!id } });
 
-  const { sendMessage, isTyping, streamedContent } = useStoryStream(id, settings);
+  const { sendMessage, isTyping, streamedContent } = useStoryStream(
+    id,
+    settings
+  );
   const updateMessage = useUpdateOpenrouterMessage();
 
-  // Voice
   const voice = useVoice(settings.blindMode);
-  const hasSpokenLastRef = useRef<number | null>(null);
 
   // Inline editing
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
 
-  // Composer
+  // Composer (normal mode)
   const [draft, setDraft] = useState("");
+
+  // Blind mode status text shown to the user
+  const [blindStatus, setBlindStatus] = useState("");
+
   const endOfStoryRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const stopListenRef = useRef<(() => void) | null>(null);
 
-  // Auto-scroll
+  // Tracks which AI message id has been processed by the blind loop
+  const lastHandledMsgIdRef = useRef<number | null>(null);
+  // Prevents concurrent blind-mode loops
+  const blindLoopRunningRef = useRef(false);
+  // Allows the in-flight loop to detect blind-mode toggle-off
+  const blindModeEnabledRef = useRef(settings.blindMode);
+
+  useEffect(() => {
+    blindModeEnabledRef.current = settings.blindMode;
+    if (!settings.blindMode) {
+      voice.stopSpeaking();
+      // STT will time out / resolve on its own
+    }
+  }, [settings.blindMode, voice]);
+
+  // Auto-scroll whenever content changes
   useEffect(() => {
     endOfStoryRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamedContent, isTyping]);
 
-  // Blind mode: read last AI message aloud when messages change and AI is done
+  // --- Blind mode auto-loop ---
   useEffect(() => {
-    if (!settings.blindMode || isTyping || !messages?.length) return;
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg.role !== "assistant") return;
-    if (hasSpokenLastRef.current === lastMsg.id) return;
-    hasSpokenLastRef.current = lastMsg.id;
-    voice.speak(lastMsg.content);
-  }, [messages, isTyping, settings.blindMode, voice]);
+    if (!settings.blindMode) return;
+    if (isTyping) return; // AI is still writing — wait
+    if (blindLoopRunningRef.current) return; // loop already in flight
+    if (!messages) return; // data not yet loaded
+
+    const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+
+    // Already handled this AI turn
+    if (
+      lastMsg?.role === "assistant" &&
+      lastHandledMsgIdRef.current === lastMsg.id
+    )
+      return;
+
+    blindLoopRunningRef.current = true;
+
+    async function runLoop() {
+      try {
+        // 1. Speak the last AI paragraph (if any)
+        if (lastMsg?.role === "assistant") {
+          lastHandledMsgIdRef.current = lastMsg.id!;
+          setBlindStatus("Reading the story aloud…");
+          await voice.speak(lastMsg.content);
+        }
+
+        if (!blindModeEnabledRef.current) return;
+
+        // 2. Keep listening until the user says something
+        let transcript = "";
+        while (!transcript.trim()) {
+          if (!blindModeEnabledRef.current) return;
+          setBlindStatus("Listening… speak your paragraph.");
+          transcript = await voice.listenOnce();
+
+          if (!blindModeEnabledRef.current) return;
+
+          if (!transcript.trim()) {
+            // Nothing heard — briefly announce and retry
+            setBlindStatus("Didn't catch that. Listening again…");
+            await voice.speak("I didn't catch that. Please speak your paragraph.");
+            if (!blindModeEnabledRef.current) return;
+          }
+        }
+
+        // 3. Show what was heard and auto-submit
+        setDraft(transcript.trim());
+        setBlindStatus("Sending your paragraph…");
+        await sendMessage(transcript.trim());
+        setDraft("");
+        setBlindStatus("");
+      } finally {
+        blindLoopRunningRef.current = false;
+      }
+    }
+
+    runLoop();
+  }, [messages, isTyping, settings.blindMode, voice, sendMessage]);
 
   // Inline edit handlers
-  const startEdit = (id: number, content: string) => {
-    setEditingId(id);
+  const startEdit = (msgId: number, content: string) => {
+    setEditingId(msgId);
     setEditDraft(content);
   };
 
@@ -91,12 +157,14 @@ export default function Story() {
       messageId,
       data: { content: editDraft.trim() },
     });
-    queryClient.invalidateQueries({ queryKey: getListOpenrouterMessagesQueryKey(id) });
+    queryClient.invalidateQueries({
+      queryKey: getListOpenrouterMessagesQueryKey(id),
+    });
     setEditingId(null);
     setEditDraft("");
   };
 
-  // Composer: send
+  // Normal mode send
   const handleSend = useCallback(async () => {
     if (!draft.trim() || isTyping) return;
     const content = draft.trim();
@@ -109,25 +177,6 @@ export default function Story() {
       e.preventDefault();
       handleSend();
     }
-  };
-
-  // Voice: start / stop listening
-  const startListening = () => {
-    voice.stopSpeaking();
-    const stop = voice.listen(
-      (transcript) => {
-        setDraft((prev) => (prev ? prev + " " + transcript : transcript));
-      },
-      () => {
-        stopListenRef.current = null;
-      }
-    );
-    stopListenRef.current = stop;
-  };
-
-  const stopListening = () => {
-    stopListenRef.current?.();
-    stopListenRef.current = null;
   };
 
   if (isLoadingConv || isLoadingMsgs) {
@@ -148,14 +197,16 @@ export default function Story() {
       <div className="max-w-3xl mx-auto py-20 px-6 text-center">
         <h2 className="text-2xl font-serif mb-4">Story not found</h2>
         <Link href="/">
-          <Button variant="outline" className="font-sans">Return to Library</Button>
+          <Button variant="outline" className="font-sans">
+            Return to Library
+          </Button>
         </Link>
       </div>
     );
   }
 
-  const isListening = voice.state === "listening";
   const isSpeaking = voice.state === "speaking";
+  const isListening = voice.state === "listening";
 
   return (
     <div className="max-w-3xl mx-auto min-h-screen flex flex-col bg-background">
@@ -163,7 +214,11 @@ export default function Story() {
       <header className="py-6 px-6 md:px-8 border-b border-border/40 sticky top-0 bg-background/95 backdrop-blur-sm z-10 flex items-center justify-between">
         <div className="flex items-center gap-4 overflow-hidden">
           <Link href="/">
-            <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground hover:text-foreground">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+            >
               <ArrowLeft className="w-5 h-5" />
             </Button>
           </Link>
@@ -194,81 +249,87 @@ export default function Story() {
       >
         {messages?.length === 0 && (
           <div className="text-center py-20 text-muted-foreground italic">
-            The first page is blank. Write the opening paragraph below...
+            {settings.blindMode
+              ? "Blind mode is on. Speak your opening paragraph."
+              : "The first page is blank. Write the opening paragraph below…"}
           </div>
         )}
 
-        {messages?.filter((msg) => msg.content.trim() !== "").map((msg) => (
-          <div
-            key={msg.id}
-            className={cn(
-              "group relative animate-in fade-in slide-in-from-bottom-2 duration-500",
-              msg.role === "assistant" ? "text-foreground" : "text-primary/90"
-            )}
-          >
-            {/* Role marker */}
+        {messages
+          ?.filter((msg) => msg.content.trim() !== "")
+          .map((msg) => (
             <div
+              key={msg.id}
               className={cn(
-                "absolute -left-8 top-1.5 opacity-0 group-hover:opacity-40 transition-opacity",
-                msg.role === "assistant" ? "text-secondary-foreground" : "text-primary"
+                "group relative animate-in fade-in slide-in-from-bottom-2 duration-500",
+                msg.role === "assistant"
+                  ? "text-foreground"
+                  : "text-primary/90"
               )}
             >
-              {msg.role === "assistant" ? (
-                <Sparkles className="w-4 h-4" />
+              <div
+                className={cn(
+                  "absolute -left-8 top-1.5 opacity-0 group-hover:opacity-40 transition-opacity",
+                  msg.role === "assistant"
+                    ? "text-secondary-foreground"
+                    : "text-primary"
+                )}
+              >
+                {msg.role === "assistant" ? (
+                  <Sparkles className="w-4 h-4" />
+                ) : (
+                  <PenLine className="w-4 h-4" />
+                )}
+              </div>
+
+              {editingId === msg.id ? (
+                <div className="space-y-2">
+                  <Textarea
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    autoFocus
+                    className="min-h-[100px] resize-none font-serif text-lg leading-relaxed bg-background/80 border-primary/40 focus-visible:ring-primary/50"
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") cancelEdit();
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+                        saveEdit(msg.id);
+                    }}
+                  />
+                  <div className="flex gap-2 justify-end">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={cancelEdit}
+                      className="h-8 text-muted-foreground hover:text-foreground font-sans text-xs"
+                    >
+                      <X className="w-3.5 h-3.5 mr-1" />
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => saveEdit(msg.id)}
+                      disabled={!editDraft.trim() || updateMessage.isPending}
+                      className="h-8 bg-primary text-primary-foreground hover:bg-primary/90 font-sans text-xs"
+                    >
+                      <Check className="w-3.5 h-3.5 mr-1" />
+                      Save
+                    </Button>
+                  </div>
+                </div>
               ) : (
-                <PenLine className="w-4 h-4" />
+                <div className="relative">
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                  <button
+                    onClick={() => startEdit(msg.id, msg.content)}
+                    aria-label="Edit passage"
+                    className="absolute -right-8 top-0.5 opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity text-muted-foreground hover:text-primary p-1 rounded"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               )}
             </div>
-
-            {editingId === msg.id ? (
-              /* Inline editor */
-              <div className="space-y-2">
-                <Textarea
-                  value={editDraft}
-                  onChange={(e) => setEditDraft(e.target.value)}
-                  autoFocus
-                  className="min-h-[100px] resize-none font-serif text-lg leading-relaxed bg-background/80 border-primary/40 focus-visible:ring-primary/50"
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") cancelEdit();
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveEdit(msg.id);
-                  }}
-                />
-                <div className="flex gap-2 justify-end">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={cancelEdit}
-                    className="h-8 text-muted-foreground hover:text-foreground font-sans text-xs"
-                  >
-                    <X className="w-3.5 h-3.5 mr-1" />
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => saveEdit(msg.id)}
-                    disabled={!editDraft.trim() || updateMessage.isPending}
-                    className="h-8 bg-primary text-primary-foreground hover:bg-primary/90 font-sans text-xs"
-                  >
-                    <Check className="w-3.5 h-3.5 mr-1" />
-                    Save
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              /* Normal view with hover edit button */
-              <div className="relative">
-                <div className="whitespace-pre-wrap">{msg.content}</div>
-                <button
-                  onClick={() => startEdit(msg.id, msg.content)}
-                  aria-label="Edit passage"
-                  className="absolute -right-8 top-0.5 opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity text-muted-foreground hover:text-primary p-1 rounded"
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
+          ))}
 
         {/* Streaming AI response */}
         {isTyping && (
@@ -286,75 +347,39 @@ export default function Story() {
         <div ref={endOfStoryRef} className="h-4" />
       </div>
 
-      {/* Editor / Voice area */}
+      {/* Bottom bar */}
       <div className="p-4 md:p-6 border-t border-border/40 bg-card rounded-t-2xl shadow-[0_-4px_20px_rgba(0,0,0,0.02)]">
         {settings.blindMode ? (
-          /* Blind mode composer */
+          /* --- Blind mode: fully automatic, no touch needed --- */
           <div className="space-y-3">
-            {/* Voice status */}
-            <div className="text-center text-sm font-sans text-muted-foreground italic min-h-[1.5em]">
-              {isSpeaking
-                ? "Listening to the story… tap the speaker icon in the header to stop."
-                : isListening
-                ? "Recording your voice… speak your paragraph, then tap the mic again to stop."
-                : isTyping
-                ? "Your co-author is writing…"
-                : "Tap the microphone to speak your next paragraph."}
+            {/* Live voice indicator */}
+            <div className="flex items-center justify-center gap-3 py-2">
+              {isSpeaking && (
+                <Volume2 className="w-5 h-5 text-primary animate-pulse shrink-0" />
+              )}
+              {isListening && (
+                <Mic className="w-5 h-5 text-destructive animate-pulse shrink-0" />
+              )}
+              <p className="text-center text-sm font-sans text-muted-foreground italic">
+                {isTyping
+                  ? "Your co-author is writing…"
+                  : isSpeaking
+                  ? "Reading the story aloud…"
+                  : isListening
+                  ? "Listening… speak your paragraph."
+                  : blindStatus || "Ready."}
+              </p>
             </div>
 
-            {/* Transcribed preview */}
+            {/* Transcript preview (so a sighted helper can see what was heard) */}
             {draft && (
-              <div className="px-4 py-3 rounded-lg bg-background/70 border border-border/40 font-serif text-base leading-relaxed text-primary/80 min-h-[60px]">
+              <div className="px-4 py-3 rounded-lg bg-background/70 border border-border/40 font-serif text-base leading-relaxed text-primary/80">
                 {draft}
               </div>
             )}
-
-            <div className="flex items-center justify-center gap-4">
-              {/* Mic button */}
-              <Button
-                size="lg"
-                onClick={isListening ? stopListening : startListening}
-                disabled={isTyping || isSpeaking}
-                className={cn(
-                  "h-16 w-16 rounded-full shadow-md transition-all",
-                  isListening
-                    ? "bg-destructive hover:bg-destructive/90 text-white animate-pulse"
-                    : "bg-primary hover:bg-primary/90 text-primary-foreground"
-                )}
-                aria-label={isListening ? "Stop recording" : "Start recording"}
-              >
-                {isListening ? <MicOff className="w-7 h-7" /> : <Mic className="w-7 h-7" />}
-              </Button>
-
-              {/* Send transcribed text */}
-              {draft && !isListening && (
-                <Button
-                  size="lg"
-                  onClick={handleSend}
-                  disabled={!draft.trim() || isTyping}
-                  className="h-16 w-16 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-md"
-                  aria-label="Send"
-                >
-                  <Send className="w-6 h-6 ml-0.5" />
-                </Button>
-              )}
-
-              {/* Clear draft */}
-              {draft && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => setDraft("")}
-                  className="h-10 w-10 rounded-full text-muted-foreground"
-                  aria-label="Clear"
-                >
-                  <X className="w-5 h-5" />
-                </Button>
-              )}
-            </div>
           </div>
         ) : (
-          /* Normal text composer */
+          /* --- Normal text composer --- */
           <div className="relative">
             <Textarea
               value={draft}

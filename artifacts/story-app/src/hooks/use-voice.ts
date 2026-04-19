@@ -2,6 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type VoiceState = "idle" | "listening" | "speaking";
 
+type SpeechRecognitionCtor = new () => SpeechRecognition;
+
+function getSpeechRecognition(): SpeechRecognitionCtor | null {
+  if (typeof window === "undefined") return null;
+  const w = window as Window & {
+    SpeechRecognition?: SpeechRecognitionCtor;
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
 export function useVoice(enabled: boolean) {
   const [state, setState] = useState<VoiceState>("idle");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -45,20 +56,57 @@ export function useVoice(enabled: boolean) {
     setState("idle");
   }, []);
 
+  /** One-shot listen: resolves with the transcript (empty string on silence/error). */
+  const listenOnce = useCallback((): Promise<string> => {
+    return new Promise((resolve) => {
+      if (!enabled) {
+        resolve("");
+        return;
+      }
+
+      const Ctor = getSpeechRecognition();
+      if (!Ctor) {
+        resolve("");
+        return;
+      }
+
+      const recognition = new Ctor();
+      recognitionRef.current = recognition;
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      let transcript = "";
+
+      recognition.onstart = () => setState("listening");
+      recognition.onresult = (e) => {
+        transcript = e.results[0]?.[0]?.transcript ?? "";
+      };
+      recognition.onend = () => {
+        setState("idle");
+        resolve(transcript);
+      };
+      recognition.onerror = () => {
+        setState("idle");
+        resolve("");
+      };
+
+      recognition.start();
+    });
+  }, [enabled]);
+
+  /** Manual listen with streaming interim results (used outside of blind auto-loop). */
   const listen = useCallback(
     (onResult: (transcript: string) => void, onEnd?: () => void): (() => void) => {
       if (!enabled) return () => {};
 
-      const SpeechRecognitionImpl =
-        (window as Window & typeof globalThis & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition ||
-        (window as Window & typeof globalThis & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition;
-
-      if (!SpeechRecognitionImpl) {
+      const Ctor = getSpeechRecognition();
+      if (!Ctor) {
         alert("Your browser does not support voice recognition. Try Chrome or Edge.");
         return () => {};
       }
 
-      const recognition = new SpeechRecognitionImpl();
+      const recognition = new Ctor();
       recognitionRef.current = recognition;
       recognition.continuous = false;
       recognition.interimResults = false;
@@ -66,8 +114,8 @@ export function useVoice(enabled: boolean) {
 
       recognition.onstart = () => setState("listening");
       recognition.onresult = (e) => {
-        const transcript = e.results[0]?.[0]?.transcript ?? "";
-        onResult(transcript);
+        const t = e.results[0]?.[0]?.transcript ?? "";
+        onResult(t);
       };
       recognition.onend = () => {
         setState("idle");
@@ -88,5 +136,5 @@ export function useVoice(enabled: boolean) {
     [enabled]
   );
 
-  return { state, speak, stopSpeaking, listen };
+  return { state, speak, stopSpeaking, listen, listenOnce };
 }
