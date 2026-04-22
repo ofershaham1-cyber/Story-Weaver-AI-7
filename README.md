@@ -194,7 +194,21 @@ Filter by `Error` level to see only errors. Network errors (failed API calls) al
 
 
 ---
+
+- create openrouter configuration
+
 ```sh
 #to set openrouter access - update config file:
 cp artifacts/api-server/config.json.example artifacts/api-server/config.json
+```
+
+- start client/server:
+```sh
+scripts/init.app.sh
+```
+
+- view logs:
+```sh
+cat artifacts/api-server/logs/server.log
+cat artifacts/api-server/logs/openrouter.log
 ```

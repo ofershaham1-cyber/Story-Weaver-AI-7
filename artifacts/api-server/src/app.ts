@@ -57,11 +57,22 @@ if (openApiSpec) {
   app.get("/api/docs/openapi.json", (_req, res) => {
     res.json(openApiSpec);
   });
+  // Without a trailing slash, the Swagger HTML's relative asset URLs
+  // (./swagger-ui.css, ./swagger-ui-bundle.js) resolve to /api/* and 404.
+  // Intercept the no-slash case BEFORE the swagger middleware runs.
+  app.use((req, res, next) => {
+    if (req.method === "GET" && req.path === "/api/docs") {
+      res.redirect(301, "/api/docs/");
+      return;
+    }
+    next();
+  });
   app.use(
     "/api/docs",
     swaggerUi.serve,
     swaggerUi.setup(openApiSpec, {
       customSiteTitle: "Story Together API",
+      swaggerOptions: { url: "/api/docs/openapi.json" },
     }),
   );
 }
