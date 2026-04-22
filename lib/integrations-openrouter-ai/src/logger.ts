@@ -37,9 +37,9 @@ const prodTransport = {
 export const openrouterLogger = pino({
   name: "openrouter",
   level: logLevel,
-  redact: {
-    paths: ["req.headers.authorization", "req.headers.Authorization"],
-    censor: "[REDACTED]",
-  },
+  // redact: {
+  //   paths: ["req.headers.authorization", "req.headers.Authorization"],
+  //   censor: "[REDACTED]",
+  // },
   transport: isProduction ? prodTransport : devTransport,
 });
