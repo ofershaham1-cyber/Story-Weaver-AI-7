@@ -7,7 +7,8 @@
     "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "docs": "echo 'Swagger UI: http://localhost:'${PORT:-8080}'/api/docs'"
   },
   "dependencies": {
     "@workspace/api-zod": "workspace:*",
@@ -19,13 +20,16 @@
     "express": "^5",
     "openai": "^6.34.0",
     "pino": "^9",
-    "pino-http": "^10"
+    "pino-http": "^10",
+    "swagger-ui-express": "^5",
+    "yaml": "^2"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "catalog:",
+    "@types/swagger-ui-express": "^4.1.8",
     "esbuild": "^0.27.3",
     "esbuild-plugin-pino": "^2.3.3",
     "pino-pretty": "^13",

@@ -52,6 +52,18 @@ export interface UpdateOpenrouterMessageBody {
   content: string;
 }
 
+export interface TriggerOpenrouterAiTurnBody {
+  model?: string;
+  /** @nullable */
+  maxTokens?: number | null;
+  /** @nullable */
+  temperature?: number | null;
+  /** @nullable */
+  apiKey?: string | null;
+  /** @nullable */
+  apiUrl?: string | null;
+}
+
 export interface OpenrouterCompletion {
   answer: string;
   model: string;

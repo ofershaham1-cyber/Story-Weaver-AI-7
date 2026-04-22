@@ -166,6 +166,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OpenrouterError"
+  /openrouter/conversations/{id}/ai-turn:
+    post:
+      operationId: triggerOpenrouterAiTurn
+      tags: [openrouter]
+      summary: Stream an AI assistant response based on existing history (SSE)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerOpenrouterAiTurnBody"
+      responses:
+        "200":
+          description: SSE stream of assistant response chunks
+          content:
+            text/event-stream: {}
+        "400":
+          description: Invalid request or no messages to respond to
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenrouterError"
+        "404":
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenrouterError"
   /openrouter/conversations/{id}/messages:
     get:
       operationId: listOpenrouterMessages
@@ -189,7 +223,7 @@ paths:
     post:
       operationId: sendOpenrouterMessage
       tags: [openrouter]
-      summary: Send a message and receive an AI response (SSE stream)
+      summary: Send a user message; optionally stream an AI response (SSE)
       parameters:
         - name: id
           in: path
@@ -302,6 +336,19 @@ components:
           type: string
       required:
         - content
+    TriggerOpenrouterAiTurnBody:
+      type: object
+      properties:
+        model:
+          type: string
+        maxTokens:
+          type: ["integer", "null"]
+        temperature:
+          type: ["number", "null"]
+        apiKey:
+          type: ["string", "null"]
+        apiUrl:
+          type: ["string", "null"]
     OpenrouterCompletion:
       type: object
       properties:

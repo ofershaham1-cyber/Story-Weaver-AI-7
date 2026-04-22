@@ -101,6 +101,21 @@ export const CreateOpenrouterCompletionResponse = zod.object({
 });
 
 /**
+ * @summary Stream an AI assistant response based on existing history (SSE)
+ */
+export const TriggerOpenrouterAiTurnParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const TriggerOpenrouterAiTurnBody = zod.object({
+  model: zod.string().optional(),
+  maxTokens: zod.number().nullish(),
+  temperature: zod.number().nullish(),
+  apiKey: zod.string().nullish(),
+  apiUrl: zod.string().nullish(),
+});
+
+/**
  * @summary List messages in a conversation
  */
 export const ListOpenrouterMessagesParams = zod.object({
@@ -119,7 +134,7 @@ export const ListOpenrouterMessagesResponse = zod.array(
 );
 
 /**
- * @summary Send a message and receive an AI response (SSE stream)
+ * @summary Send a user message; optionally stream an AI response (SSE)
  */
 export const SendOpenrouterMessageParams = zod.object({
   id: zod.coerce.number(),

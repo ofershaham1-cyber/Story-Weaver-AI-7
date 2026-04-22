@@ -117,6 +117,35 @@ docker-compose down -v
 
 ---
 
+## API Documentation (Swagger UI)
+
+Interactive API docs are served by the API server at:
+
+```
+http://localhost:8080/api/docs
+```
+
+The raw OpenAPI JSON is available at:
+
+```
+http://localhost:8080/api/docs/openapi.json
+```
+
+If you change `PORT`, swap `8080` for your value.
+
+To print the URL from the shell:
+
+```bash
+pnpm docs
+# or, with a custom port:
+PORT=8080 pnpm docs
+```
+
+The Swagger UI is mounted automatically when the API server starts — no extra
+process is needed. The spec is loaded from `lib/api-spec/openapi.yaml`.
+
+---
+
 ## Where to find error logs
 
 ### Server (API backend) logs

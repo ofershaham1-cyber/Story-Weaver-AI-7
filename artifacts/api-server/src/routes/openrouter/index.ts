@@ -267,6 +267,113 @@ router.post(
   },
 );
 
+router.post(
+  "/openrouter/conversations/:id/ai-turn",
+  async (req, res): Promise<void> => {
+    const params = SendOpenrouterMessageParams.safeParse(req.params);
+    if (!params.success) {
+      res.status(400).json({ error: params.error.message });
+      return;
+    }
+    const bodyParsed = SendOpenrouterMessageBody.safeParse({
+      content: "_unused_",
+      ...req.body,
+    });
+    if (!bodyParsed.success) {
+      res.status(400).json({ error: bodyParsed.error.message });
+      return;
+    }
+
+    const conversationId = params.data.id;
+    const { model, maxTokens, temperature, apiKey, apiUrl } = bodyParsed.data;
+
+    const [conv] = await db
+      .select()
+      .from(conversationsTable)
+      .where(eq(conversationsTable.id, conversationId));
+    if (!conv) {
+      res.status(404).json({ error: "Conversation not found" });
+      return;
+    }
+
+    const allMessages = await db
+      .select()
+      .from(messagesTable)
+      .where(eq(messagesTable.conversationId, conversationId))
+      .orderBy(messagesTable.createdAt);
+
+    const chatHistory = allMessages
+      .filter((m) => m.content.trim() !== "")
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }));
+
+    if (chatHistory.length === 0) {
+      res.status(400).json({ error: "No messages to respond to" });
+      return;
+    }
+
+    const client = getClient(apiKey, apiUrl);
+    const effectiveModel = model?.trim() || DEFAULT_MODEL;
+    const maxWords = maxTokens ?? 10;
+    const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    let fullResponse = "";
+
+    try {
+      const stream = await client.chat.completions.create({
+        model: effectiveModel,
+        max_tokens: effectiveMaxTokens,
+        temperature: temperature ?? undefined,
+        messages: [
+          {
+            role: "system",
+            content: `You are a collaborative storytelling AI friend. The user and you are writing a story together, taking turns. Write exactly one new creative paragraph that continues the story forward. IMPORTANT: Do not repeat, restate, or paraphrase anything that has already been written — only add brand-new content that hasn't appeared yet. Do not summarize or conclude the story — leave room for the user to continue. Be imaginative and engaging. Your response must be at most ${maxWords} words long — stop at a natural sentence boundary within that limit.`,
+          },
+          ...chatHistory,
+        ],
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content;
+        if (content) {
+          fullResponse += content;
+          res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        }
+      }
+
+      if (fullResponse.trim()) {
+        await db.insert(messagesTable).values({
+          conversationId,
+          role: "assistant",
+          content: fullResponse,
+        });
+      }
+
+      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      res.end();
+    } catch (err) {
+      const status =
+        err instanceof OpenAI.APIError && typeof err.status === "number"
+          ? err.status
+          : 500;
+      const message =
+        err instanceof Error ? err.message : "AI completion failed";
+      logger.error({ err, status }, "openrouter ai-turn failed");
+      res.write(
+        `data: ${JSON.stringify({ error: message, status, done: true })}\n\n`,
+      );
+      res.end();
+    }
+  },
+);
+
 router.patch(
   "/openrouter/messages/:messageId",
   async (req, res): Promise<void> => {

@@ -96,6 +96,26 @@ export function SettingsDialog({ settings, onSave }: SettingsDialogProps) {
             />
           </div>
 
+          {/* Game Mode */}
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background px-4 py-3">
+            <div>
+              <Label htmlFor="gameMode" className="text-sm font-medium cursor-pointer">
+                Manual AI Turn
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Off: AI replies automatically after you send. On: tap the spark
+                button to take the AI's turn.
+              </p>
+            </div>
+            <Switch
+              id="gameMode"
+              checked={local.gameMode === "manual"}
+              onCheckedChange={(v) =>
+                setLocal((p) => ({ ...p, gameMode: v ? "manual" : "auto" }))
+              }
+            />
+          </div>
+
           <div className="space-y-1.5">
             <Label htmlFor="model">Model</Label>
             <Input

@@ -25,6 +25,7 @@ import type {
   OpenrouterError,
   OpenrouterMessage,
   SendOpenrouterMessageBody,
+  TriggerOpenrouterAiTurnBody,
   UpdateOpenrouterMessageBody,
 } from "./api.schemas";
 
@@ -640,6 +641,94 @@ export const useCreateOpenrouterCompletion = <
 };
 
 /**
+ * @summary Stream an AI assistant response based on existing history (SSE)
+ */
+export const getTriggerOpenrouterAiTurnUrl = (id: number) => {
+  return `/api/openrouter/conversations/${id}/ai-turn`;
+};
+
+export const triggerOpenrouterAiTurn = async (
+  id: number,
+  triggerOpenrouterAiTurnBody?: TriggerOpenrouterAiTurnBody,
+  options?: RequestInit,
+): Promise<unknown> => {
+  return customFetch<unknown>(getTriggerOpenrouterAiTurnUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(triggerOpenrouterAiTurnBody),
+  });
+};
+
+export const getTriggerOpenrouterAiTurnMutationOptions = <
+  TError = ErrorType<OpenrouterError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof triggerOpenrouterAiTurn>>,
+    TError,
+    { id: number; data: BodyType<TriggerOpenrouterAiTurnBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof triggerOpenrouterAiTurn>>,
+  TError,
+  { id: number; data: BodyType<TriggerOpenrouterAiTurnBody> },
+  TContext
+> => {
+  const mutationKey = ["triggerOpenrouterAiTurn"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof triggerOpenrouterAiTurn>>,
+    { id: number; data: BodyType<TriggerOpenrouterAiTurnBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return triggerOpenrouterAiTurn(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type TriggerOpenrouterAiTurnMutationResult = NonNullable<
+  Awaited<ReturnType<typeof triggerOpenrouterAiTurn>>
+>;
+export type TriggerOpenrouterAiTurnMutationBody =
+  BodyType<TriggerOpenrouterAiTurnBody>;
+export type TriggerOpenrouterAiTurnMutationError = ErrorType<OpenrouterError>;
+
+/**
+ * @summary Stream an AI assistant response based on existing history (SSE)
+ */
+export const useTriggerOpenrouterAiTurn = <
+  TError = ErrorType<OpenrouterError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof triggerOpenrouterAiTurn>>,
+    TError,
+    { id: number; data: BodyType<TriggerOpenrouterAiTurnBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof triggerOpenrouterAiTurn>>,
+  TError,
+  { id: number; data: BodyType<TriggerOpenrouterAiTurnBody> },
+  TContext
+> => {
+  return useMutation(getTriggerOpenrouterAiTurnMutationOptions(options));
+};
+
+/**
  * @summary List messages in a conversation
  */
 export const getListOpenrouterMessagesUrl = (id: number) => {
@@ -728,7 +817,7 @@ export function useListOpenrouterMessages<
 }
 
 /**
- * @summary Send a message and receive an AI response (SSE stream)
+ * @summary Send a user message; optionally stream an AI response (SSE)
  */
 export const getSendOpenrouterMessageUrl = (id: number) => {
   return `/api/openrouter/conversations/${id}/messages`;
@@ -793,7 +882,7 @@ export type SendOpenrouterMessageMutationBody =
 export type SendOpenrouterMessageMutationError = ErrorType<unknown>;
 
 /**
- * @summary Send a message and receive an AI response (SSE stream)
+ * @summary Send a user message; optionally stream an AI response (SSE)
  */
 export const useSendOpenrouterMessage = <
   TError = ErrorType<unknown>,

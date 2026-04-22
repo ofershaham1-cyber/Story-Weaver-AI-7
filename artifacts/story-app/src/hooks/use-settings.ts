@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 
+export type GameMode = "auto" | "manual";
+
 export interface StorySettings {
   model: string;
   maxTokens: number;
@@ -8,6 +10,7 @@ export interface StorySettings {
   apiUrl: string;
   blindMode: boolean;
   playUserTranscription: boolean;
+  gameMode: GameMode;
 }
 
 const STORAGE_KEY = "story-together-settings";
@@ -20,6 +23,7 @@ const DEFAULTS: StorySettings = {
   apiUrl: "",
   blindMode: false,
   playUserTranscription: true,
+  gameMode: "auto",
 };
 
 function load(): StorySettings {

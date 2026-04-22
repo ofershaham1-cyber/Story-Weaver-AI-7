@@ -41,10 +41,15 @@ export default function Story() {
   const { data: messages, isLoading: isLoadingMsgs } =
     useListOpenrouterMessages(id, { query: { enabled: !!id } });
 
-  const { sendMessage, isTyping, streamedContent, streamError, clearError } = useStoryStream(
-    id,
-    settings
-  );
+  const {
+    submitUserMessage,
+    requestAiTurn,
+    sendMessage,
+    isTyping,
+    streamedContent,
+    streamError,
+    clearError,
+  } = useStoryStream(id, settings);
   const updateMessage = useUpdateOpenrouterMessage();
 
   const voice = useVoice(settings.blindMode);
@@ -176,7 +181,7 @@ export default function Story() {
         playSound("stt-complete");
         setDraft(transcript.trim());
         setBlindStatus("Sending your paragraph…");
-        await sendMessage(transcript.trim());
+        await sendMessage(transcript.trim(), { autoAiTurn: true });
         setDraft("");
         setBlindStatus("");
       } finally {
@@ -226,13 +231,19 @@ export default function Story() {
     return stop;
   }, [isTyping, voice, playSound]);
 
-  // Normal mode send
+  // Submit user's typed paragraph (no AI yet); in auto mode, immediately ask AI to take its turn.
   const handleSend = useCallback(async () => {
     if (!draft.trim() || isTyping) return;
     const content = draft.trim();
     setDraft("");
-    await sendMessage(content);
-  }, [draft, isTyping, sendMessage]);
+    await sendMessage(content, { autoAiTurn: settings.gameMode === "auto" });
+  }, [draft, isTyping, sendMessage, settings.gameMode]);
+
+  // Manual mode: explicitly request the AI to take its turn.
+  const handleRequestAi = useCallback(async () => {
+    if (isTyping) return;
+    await requestAiTurn();
+  }, [isTyping, requestAiTurn]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -240,6 +251,13 @@ export default function Story() {
       handleSend();
     }
   };
+
+  const lastMessage = messages && messages.length > 0 ? messages[messages.length - 1] : null;
+  const aiTurnAvailable =
+    !isTyping &&
+    !!lastMessage &&
+    lastMessage.role === "user" &&
+    lastMessage.content.trim() !== "";
 
   if (isLoadingConv || isLoadingMsgs) {
     return (
@@ -520,9 +538,23 @@ export default function Story() {
                 onClick={handleSend}
                 disabled={!draft.trim() || isTyping}
                 className="h-10 w-10 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm transition-all"
+                aria-label="Send your paragraph"
               >
                 <Send className="w-4 h-4 ml-0.5" />
               </Button>
+              {settings.gameMode === "manual" && (
+                <Button
+                  size="icon"
+                  variant="secondary"
+                  onClick={handleRequestAi}
+                  disabled={!aiTurnAvailable}
+                  className="h-10 w-10 rounded-full shadow-sm transition-all"
+                  aria-label="Request AI turn"
+                  title="Request AI turn"
+                >
+                  <Sparkles className="w-4 h-4" />
+                </Button>
+              )}
             </div>
           </div>
         )}
