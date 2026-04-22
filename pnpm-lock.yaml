@@ -655,6 +655,9 @@ importers:
       p-retry:
         specifier: ^7.1.1
         version: 7.1.1
+      pino:
+        specifier: ^9
+        version: 9.14.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
