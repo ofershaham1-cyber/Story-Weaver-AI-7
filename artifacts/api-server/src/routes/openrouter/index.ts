@@ -17,7 +17,10 @@ import {
   UpdateOpenrouterMessageParams,
   UpdateOpenrouterMessageBody,
 } from "@workspace/api-zod";
-import { openrouter } from "@workspace/integrations-openrouter-ai";
+import {
+  openrouter,
+  createOpenRouterClient,
+} from "@workspace/integrations-openrouter-ai";
 import OpenAI from "openai";
 import { logger } from "../../lib/logger";
 
@@ -60,7 +63,7 @@ function getClient(apiKey?: string | null, apiUrl?: string | null): OpenAI {
     process.env.AI_INTEGRATIONS_OPENROUTER_BASE_URL;
 
   if (resolvedUrl && resolvedKey) {
-    return new OpenAI({
+    return createOpenRouterClient({
       baseURL: resolvedUrl,
       apiKey: resolvedKey,
     });
@@ -289,5 +292,54 @@ router.patch(
     res.json(updated);
   },
 );
+
+router.post("/openrouter/completions", async (req, res): Promise<void> => {
+  const parsed = SendOpenrouterMessageBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const {
+    content: userContent,
+    model,
+    maxTokens,
+    temperature,
+    apiKey,
+    apiUrl,
+  } = parsed.data;
+
+  const client = getClient(apiKey, apiUrl);
+  const effectiveModel = model?.trim() || DEFAULT_MODEL;
+  const maxWords = maxTokens ?? 10;
+  const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
+
+  try {
+    const completion = await client.chat.completions.create({
+      model: effectiveModel,
+      max_tokens: effectiveMaxTokens,
+      temperature: temperature ?? undefined,
+      messages: [
+        {
+          role: "system",
+          content: `You are a collaborative storytelling AI friend. Write exactly one new creative paragraph that continues the story forward. Your response must be at most ${maxWords} words long — stop at a natural sentence boundary within that limit.`,
+        },
+        { role: "user", content: userContent },
+      ],
+    });
+
+    const answer = completion.choices[0]?.message?.content ?? "";
+    res.json({ answer, model: effectiveModel });
+  } catch (err) {
+    const status =
+      err instanceof OpenAI.APIError && typeof err.status === "number"
+        ? err.status
+        : 500;
+    const message =
+      err instanceof Error ? err.message : "AI completion failed";
+    logger.error({ err, status }, "openrouter completion failed");
+    res.status(status).json({ error: message });
+  }
+});
 
 export default router;

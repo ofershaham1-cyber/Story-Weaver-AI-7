@@ -19,6 +19,7 @@ import type {
 import type {
   CreateOpenrouterConversationBody,
   HealthStatus,
+  OpenrouterCompletion,
   OpenrouterConversation,
   OpenrouterConversationWithMessages,
   OpenrouterError,
@@ -548,6 +549,94 @@ export const useUpdateOpenrouterMessage = <
   TContext
 > => {
   return useMutation(getUpdateOpenrouterMessageMutationOptions(options));
+};
+
+/**
+ * @summary Generate a single AI completion (non-streaming)
+ */
+export const getCreateOpenrouterCompletionUrl = () => {
+  return `/api/openrouter/completions`;
+};
+
+export const createOpenrouterCompletion = async (
+  sendOpenrouterMessageBody: SendOpenrouterMessageBody,
+  options?: RequestInit,
+): Promise<OpenrouterCompletion> => {
+  return customFetch<OpenrouterCompletion>(getCreateOpenrouterCompletionUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(sendOpenrouterMessageBody),
+  });
+};
+
+export const getCreateOpenrouterCompletionMutationOptions = <
+  TError = ErrorType<OpenrouterError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createOpenrouterCompletion>>,
+    TError,
+    { data: BodyType<SendOpenrouterMessageBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createOpenrouterCompletion>>,
+  TError,
+  { data: BodyType<SendOpenrouterMessageBody> },
+  TContext
+> => {
+  const mutationKey = ["createOpenrouterCompletion"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createOpenrouterCompletion>>,
+    { data: BodyType<SendOpenrouterMessageBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createOpenrouterCompletion(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateOpenrouterCompletionMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createOpenrouterCompletion>>
+>;
+export type CreateOpenrouterCompletionMutationBody =
+  BodyType<SendOpenrouterMessageBody>;
+export type CreateOpenrouterCompletionMutationError =
+  ErrorType<OpenrouterError>;
+
+/**
+ * @summary Generate a single AI completion (non-streaming)
+ */
+export const useCreateOpenrouterCompletion = <
+  TError = ErrorType<OpenrouterError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createOpenrouterCompletion>>,
+    TError,
+    { data: BodyType<SendOpenrouterMessageBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createOpenrouterCompletion>>,
+  TError,
+  { data: BodyType<SendOpenrouterMessageBody> },
+  TContext
+> => {
+  return useMutation(getCreateOpenrouterCompletionMutationOptions(options));
 };
 
 /**

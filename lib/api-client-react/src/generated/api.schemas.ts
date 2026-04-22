@@ -52,6 +52,11 @@ export interface UpdateOpenrouterMessageBody {
   content: string;
 }
 
+export interface OpenrouterCompletion {
+  answer: string;
+  model: string;
+}
+
 export interface OpenrouterError {
   error: string;
 }

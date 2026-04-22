@@ -8,6 +8,7 @@
 
 export * from "./createOpenrouterConversationBody";
 export * from "./healthStatus";
+export * from "./openrouterCompletion";
 export * from "./openrouterConversation";
 export * from "./openrouterConversationWithMessages";
 export * from "./openrouterError";

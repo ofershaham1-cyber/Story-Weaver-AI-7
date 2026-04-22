@@ -130,6 +130,42 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OpenrouterError"
+  /openrouter/completions:
+    post:
+      operationId: createOpenrouterCompletion
+      tags: [openrouter]
+      summary: Generate a single AI completion (non-streaming)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendOpenrouterMessageBody"
+      responses:
+        "200":
+          description: AI-generated answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenrouterCompletion"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenrouterError"
+        "429":
+          description: Upstream rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenrouterError"
+        "500":
+          description: Upstream or internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenrouterError"
   /openrouter/conversations/{id}/messages:
     get:
       operationId: listOpenrouterMessages
@@ -266,6 +302,16 @@ components:
           type: string
       required:
         - content
+    OpenrouterCompletion:
+      type: object
+      properties:
+        answer:
+          type: string
+        model:
+          type: string
+      required:
+        - answer
+        - model
     OpenrouterError:
       type: object
       properties:

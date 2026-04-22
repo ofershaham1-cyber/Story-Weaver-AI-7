@@ -83,6 +83,24 @@ export const UpdateOpenrouterMessageResponse = zod.object({
 });
 
 /**
+ * @summary Generate a single AI completion (non-streaming)
+ */
+export const CreateOpenrouterCompletionBody = zod.object({
+  content: zod.string(),
+  model: zod.string().optional(),
+  maxTokens: zod.number().nullish(),
+  temperature: zod.number().nullish(),
+  apiKey: zod.string().nullish(),
+  apiUrl: zod.string().nullish(),
+  skipAiCompletion: zod.boolean().optional(),
+});
+
+export const CreateOpenrouterCompletionResponse = zod.object({
+  answer: zod.string(),
+  model: zod.string(),
+});
+
+/**
  * @summary List messages in a conversation
  */
 export const ListOpenrouterMessagesParams = zod.object({
