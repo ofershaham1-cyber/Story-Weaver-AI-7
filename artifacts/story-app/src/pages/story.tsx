@@ -27,9 +27,14 @@ import {
   Check,
   X,
   Volume2,
+  VolumeX,
   Mic,
+  MicOff,
+  Ear,
+  EarOff,
   AlertCircle,
   Trash2,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -88,6 +93,8 @@ export default function Story() {
 
   // Tracks which AI message id has been processed by the blind loop
   const lastHandledMsgIdRef = useRef<number | null>(null);
+  // Tracks which (lastMsg, refreshTick) pair the blind loop has started for
+  const lastCycleKeyRef = useRef<string | null>(null);
   // Prevents concurrent blind-mode loops
   const blindLoopRunningRef = useRef(false);
   // Allows the in-flight loop to detect blind-mode toggle-off
@@ -101,7 +108,12 @@ export default function Story() {
     blindModeEnabledRef.current = settings.blindMode;
     if (!settings.blindMode) {
       voice.stopSpeaking();
+      voice.stopListening();
       setIsNoResponse(false);
+      gaveUpRef.current = false;
+    } else {
+      // Re-entering blind mode → forget previous cycle so loop fires
+      lastCycleKeyRef.current = null;
       gaveUpRef.current = false;
     }
   }, [settings.blindMode, voice]);
@@ -128,6 +140,26 @@ export default function Story() {
     endOfStoryRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamedContent, isTyping]);
 
+  // Settings ref so the running blind loop always reads the latest values
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  // Timer for "interval" continue mode auto-restart
+  const intervalRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const clearIntervalRetry = useCallback(() => {
+    if (intervalRetryTimerRef.current) {
+      clearTimeout(intervalRetryTimerRef.current);
+      intervalRetryTimerRef.current = null;
+    }
+  }, []);
+
+  // Bumping this triggers the blind-mode effect to (re)start a listening cycle
+  const [refreshTick, setRefreshTick] = useState(0);
+
   // --- Blind mode auto-loop ---
   useEffect(() => {
     if (!settings.blindMode) return;
@@ -137,19 +169,26 @@ export default function Story() {
     if (!messages) return;
 
     const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+    const lastMsgKey = lastMsg ? `${lastMsg.id}` : "empty";
+    const cycleKey = `${lastMsgKey}:${refreshTick}`;
 
-    if (
+    // Skip if we've already started the cycle for this (lastMsg, refreshTick) pair
+    if (lastCycleKeyRef.current === cycleKey) return;
+    lastCycleKeyRef.current = cycleKey;
+
+    // We re-speak the AI paragraph only the first time we see a new AI msg.
+    const shouldSpeak =
       lastMsg?.role === "assistant" &&
-      lastHandledMsgIdRef.current === lastMsg.id
-    )
-      return;
+      lastHandledMsgIdRef.current !== lastMsg.id;
 
     blindLoopRunningRef.current = true;
 
     async function runLoop() {
       try {
-        // 1. Speak the last AI paragraph (if any)
-        if (lastMsg?.role === "assistant") {
+        const cur = settingsRef.current;
+
+        // 1. Speak the last AI paragraph (only when it's actually new)
+        if (lastMsg?.role === "assistant" && shouldSpeak) {
           lastHandledMsgIdRef.current = lastMsg.id!;
           setBlindStatus("Reading the story aloud…");
           await voice.speak(lastMsg.content);
@@ -157,19 +196,20 @@ export default function Story() {
 
         if (!blindModeEnabledRef.current) return;
 
-        // 2. Listen — nudge after 10.5 s of silence, give up after 2 nudges
+        // 2. Listen — config-driven nudge / silence / language
         setBlindStatus("Listening… speak your paragraph.");
         const transcript = await voice.listenOnce({
-          silenceMs: 4000,
-          nudgeMs: 10500,
-          maxNudges: 2,
+          silenceMs: cur.stt.silenceMs,
+          nudgeMs: cur.stt.nudgeMs,
+          maxNudges: cur.stt.maxNudges,
+          language: cur.stt.language,
           onNudge: (n) => {
             playSound("nudge");
             setIsNoResponse(true);
             setBlindStatus(
-              n < 2
+              n < cur.stt.maxNudges
                 ? "Still listening… speak whenever you're ready."
-                : "Last chance… speak now or listening will stop."
+                : "Last chance… speak now or listening will stop.",
             );
           },
         });
@@ -180,14 +220,35 @@ export default function Story() {
         if (!blindModeEnabledRef.current) return;
 
         if (!transcript.trim()) {
-          // Max nudges reached with no response — give up this turn
-          gaveUpRef.current = true;
-          setBlindStatus("No response detected. Tap the mic to try again.");
+          // No response — react based on continue mode
+          const mode = settingsRef.current.stt.continueMode;
+          if (mode === "continuous") {
+            setBlindStatus("No response — listening again…");
+            // Loop will re-run because we bump the tick after release
+            queueMicrotask(() => setRefreshTick((t) => t + 1));
+          } else if (mode === "interval") {
+            const secs = settingsRef.current.stt.intervalSeconds;
+            gaveUpRef.current = true;
+            setBlindStatus(
+              `No response. Listening again in ${secs}s — tap refresh to retry now.`,
+            );
+            clearIntervalRetry();
+            intervalRetryTimerRef.current = setTimeout(() => {
+              if (!blindModeEnabledRef.current) return;
+              gaveUpRef.current = false;
+              setRefreshTick((t) => t + 1);
+            }, secs * 1000);
+          } else {
+            gaveUpRef.current = true;
+            setBlindStatus(
+              "No response detected. Tap refresh to listen again.",
+            );
+          }
           return;
         }
 
         // 3. Play back what was heard (if option enabled)
-        if (settings.playUserTranscription) {
+        if (cur.playUserTranscription) {
           setBlindStatus("Playing back your paragraph…");
           await voice.speak(transcript.trim());
           if (!blindModeEnabledRef.current) return;
@@ -206,7 +267,25 @@ export default function Story() {
     }
 
     runLoop();
-  }, [messages, isTyping, settings.blindMode, settings.playUserTranscription, voice, sendMessage, playSound]);
+  }, [messages, isTyping, settings.blindMode, voice, sendMessage, playSound, refreshTick, clearIntervalRetry]);
+
+  // Cleanup the interval-retry timer when blind mode turns off / unmount
+  useEffect(() => {
+    if (!settings.blindMode) clearIntervalRetry();
+    return () => clearIntervalRetry();
+  }, [settings.blindMode, clearIntervalRetry]);
+
+  // User-initiated "refresh listening" — abort current STT, reset, listen again
+  const handleRefreshListening = useCallback(() => {
+    clearIntervalRetry();
+    voice.stopSpeaking();
+    voice.stopListening();
+    gaveUpRef.current = false;
+    setIsNoResponse(false);
+    setBlindStatus("Restarting…");
+    // Force the loop to re-run even if we just listened to the same AI msg
+    setRefreshTick((t) => t + 1);
+  }, [voice, clearIntervalRetry]);
 
   // Inline edit handlers
   const startEdit = (msgId: number, content: string) => {
@@ -361,19 +440,119 @@ export default function Story() {
               className="text-primary animate-pulse"
               onClick={() => voice.stopSpeaking()}
               aria-label="Stop reading"
+              data-testid="button-stop-reading"
             >
               <Volume2 className="w-5 h-5" />
             </Button>
           )}
-          {settings.gameMode === "manual" && (
-            <span
-              className="hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-500/15 border border-amber-400/30 text-amber-400 text-xs font-sans font-medium"
-              title="AI replies only when you press the AI turn button"
+
+          {/* Refresh listening — only useful in blind mode */}
+          {settings.blindMode && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={handleRefreshListening}
+              aria-label="Refresh listening"
+              title="Restart speech recognition"
+              data-testid="button-refresh-listening"
             >
-              <Sparkles className="w-3 h-3" />
-              Manual
-            </span>
+              <RefreshCw className="w-5 h-5" />
+            </Button>
           )}
+
+          {/* Quick toggle: Blind mode */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              settings.blindMode
+                ? "text-primary"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() =>
+              updateSettings({ blindMode: !settings.blindMode })
+            }
+            aria-label={settings.blindMode ? "Disable blind mode" : "Enable blind mode"}
+            aria-pressed={settings.blindMode}
+            title={settings.blindMode ? "Blind mode: ON" : "Blind mode: OFF"}
+            data-testid="button-toggle-blind-mode"
+          >
+            {settings.blindMode ? (
+              <Ear className="w-5 h-5" />
+            ) : (
+              <EarOff className="w-5 h-5" />
+            )}
+          </Button>
+
+          {/* Quick toggle: Play back your words */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              settings.playUserTranscription
+                ? "text-primary"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() =>
+              updateSettings({
+                playUserTranscription: !settings.playUserTranscription,
+              })
+            }
+            aria-label={
+              settings.playUserTranscription
+                ? "Disable playback of your words"
+                : "Enable playback of your words"
+            }
+            aria-pressed={settings.playUserTranscription}
+            title={
+              settings.playUserTranscription
+                ? "Playing back your words: ON"
+                : "Playing back your words: OFF"
+            }
+            data-testid="button-toggle-playback"
+          >
+            {settings.playUserTranscription ? (
+              <Volume2 className="w-5 h-5" />
+            ) : (
+              <VolumeX className="w-5 h-5" />
+            )}
+          </Button>
+
+          {/* Quick toggle: Manual AI turn */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              settings.gameMode === "manual"
+                ? "text-amber-400"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() =>
+              updateSettings({
+                gameMode: settings.gameMode === "manual" ? "auto" : "manual",
+              })
+            }
+            aria-label={
+              settings.gameMode === "manual"
+                ? "Switch to auto AI turns"
+                : "Switch to manual AI turns"
+            }
+            aria-pressed={settings.gameMode === "manual"}
+            title={
+              settings.gameMode === "manual"
+                ? "Manual AI turn: ON (press spark to reply)"
+                : "Manual AI turn: OFF (AI replies automatically)"
+            }
+            data-testid="button-toggle-game-mode"
+          >
+            {settings.gameMode === "manual" ? (
+              <MicOff className="w-5 h-5" />
+            ) : (
+              <Mic className="w-5 h-5" />
+            )}
+          </Button>
+
           <ThemeToggle />
           <SettingsDialog settings={settings} onSave={updateSettings} />
         </div>

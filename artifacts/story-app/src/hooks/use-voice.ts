@@ -2,7 +2,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type VoiceState = "idle" | "listening" | "speaking";
 
-type SpeechRecognitionCtor = new () => SpeechRecognition;
+// Minimal SpeechRecognition typing — the Web Speech API isn't included in
+// TypeScript's default DOM lib so we declare the surface we actually use.
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onresult: ((e: any) => void) | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onerror: ((e: any) => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+}
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 function getSpeechRecognition(): SpeechRecognitionCtor | null {
   if (typeof window === "undefined") return null;
@@ -25,11 +42,13 @@ export interface ListenOptions {
   maxNudges?: number;
   /** Called each time the nudge timer fires. Receives nudge index (1-based). */
   onNudge?: (nudgeIndex: number) => void;
+  /** BCP-47 language tag for SpeechRecognition (e.g. "en-US"). Default "en-US". */
+  language?: string;
 }
 
 export function useVoice(enabled: boolean) {
   const [state, setState] = useState<VoiceState>("idle");
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const synthRef = useRef(typeof window !== "undefined" ? window.speechSynthesis : null);
 
   useEffect(() => {
@@ -70,6 +89,11 @@ export function useVoice(enabled: boolean) {
     setState("idle");
   }, []);
 
+  const stopListening = useCallback(() => {
+    recognitionRef.current?.abort();
+    setState("idle");
+  }, []);
+
   /**
    * Listen until speech is detected and then `silenceMs` of silence elapses.
    *
@@ -84,6 +108,7 @@ export function useVoice(enabled: boolean) {
         nudgeMs = 0,
         maxNudges = 0,
         onNudge,
+        language = "en-US",
       } = options;
 
       return new Promise((resolve) => {
@@ -102,7 +127,7 @@ export function useVoice(enabled: boolean) {
         recognitionRef.current = recognition;
         recognition.continuous = true;
         recognition.interimResults = true;
-        recognition.lang = "en-US";
+        recognition.lang = language;
 
         let transcript = "";
         let speechDetected = false;
@@ -181,7 +206,11 @@ export function useVoice(enabled: boolean) {
 
   /** Manual listen with streaming interim results (used outside of blind auto-loop). */
   const listen = useCallback(
-    (onResult: (transcript: string) => void, onEnd?: () => void): (() => void) => {
+    (
+      onResult: (transcript: string) => void,
+      onEnd?: () => void,
+      language: string = "en-US",
+    ): (() => void) => {
       if (!enabled) return () => {};
 
       const Ctor = getSpeechRecognition();
@@ -194,7 +223,7 @@ export function useVoice(enabled: boolean) {
       recognitionRef.current = recognition;
       recognition.continuous = false;
       recognition.interimResults = false;
-      recognition.lang = "en-US";
+      recognition.lang = language;
 
       recognition.onstart = () => setState("listening");
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -221,5 +250,5 @@ export function useVoice(enabled: boolean) {
     [enabled]
   );
 
-  return { state, speak, stopSpeaking, listen, listenOnce };
+  return { state, speak, stopSpeaking, stopListening, listen, listenOnce };
 }

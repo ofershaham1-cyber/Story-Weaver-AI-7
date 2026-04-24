@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { STT_DEFAULTS, type SttConfig } from "@/config/stt";
 
 export type GameMode = "auto" | "manual";
 
@@ -11,6 +12,7 @@ export interface StorySettings {
   blindMode: boolean;
   playUserTranscription: boolean;
   gameMode: GameMode;
+  stt: SttConfig;
 }
 
 const STORAGE_KEY = "story-together-settings";
@@ -24,12 +26,20 @@ const DEFAULTS: StorySettings = {
   blindMode: false,
   playUserTranscription: true,
   gameMode: "auto",
+  stt: { ...STT_DEFAULTS },
 };
 
 function load(): StorySettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<StorySettings>;
+      return {
+        ...DEFAULTS,
+        ...parsed,
+        stt: { ...DEFAULTS.stt, ...(parsed.stt ?? {}) },
+      };
+    }
   } catch {}
   return DEFAULTS;
 }

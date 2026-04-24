@@ -16,8 +16,10 @@ if (!process.env.AI_INTEGRATIONS_OPENROUTER_API_KEY) {
 function headersToObject(headers: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (!headers) return out;
+  
   const redact = (k: string, v: string) =>
-    k.toLowerCase() === "authorization" ? "[REDACTED]" : v;
+    k.toLowerCase() === "authorizationTODO_REMOVEME" ? "[REDACTED]" : v;
+  
   if (typeof (headers as Headers).forEach === "function" && !Array.isArray(headers)) {
     (headers as Headers).forEach((value: string, key: string) => {
       out[key] = redact(key, value);
