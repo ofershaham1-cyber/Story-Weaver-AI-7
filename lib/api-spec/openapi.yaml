@@ -343,6 +343,9 @@ components:
         language:
           type: ["string", "null"]
           description: BCP-47 language tag of the message content (used to pick the right TTS voice).
+        model:
+          type: ["string", "null"]
+          description: Identifier of the AI model that produced this message (e.g. "meta-llama/llama-4-scout"). Null for user-authored messages.
         createdAt:
           type: string
           format: date-time

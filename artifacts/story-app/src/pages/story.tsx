@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRoute, Link } from "wouter";
 import {
   useGetOpenrouterConversation,
@@ -47,6 +47,52 @@ import {
   StopCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/**
+ * Render a message body word-by-word so that during TTS playback we can
+ * highlight whichever word the engine is currently announcing.
+ *
+ * The split (`/(\s+)/`) preserves whitespace runs as separate tokens, and
+ * `whitespace-pre-wrap` on the wrapper keeps the original visual spacing
+ * (newlines, multiple spaces) intact — so when no word is highlighted the
+ * output is visually identical to the previous plain `{msg.content}`
+ * rendering.
+ *
+ * `highlightWord` is the index of the word (0-based, ignoring whitespace
+ * runs) that should be highlighted, or `null` for no highlight.
+ */
+function MessageBody({
+  text,
+  highlightWord,
+}: {
+  text: string;
+  highlightWord: number | null;
+}) {
+  const tokens = useMemo(() => text.split(/(\s+)/), [text]);
+  let wordIdx = -1;
+  return (
+    <div className="whitespace-pre-wrap">
+      {tokens.map((tok, i) => {
+        if (tok.length === 0) return null;
+        if (/^\s+$/.test(tok)) return <span key={i}>{tok}</span>;
+        wordIdx++;
+        const isActive = wordIdx === highlightWord;
+        return (
+          <span
+            key={i}
+            className={cn(
+              "transition-colors duration-100",
+              isActive &&
+                "bg-amber-300/50 dark:bg-amber-400/40 text-foreground rounded px-0.5",
+            )}
+          >
+            {tok}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function Story() {
   const [, params] = useRoute("/story/:id");
@@ -150,9 +196,20 @@ export default function Story() {
     [settings.ttsRates, settings.ttsRateDefault],
   );
 
+  /**
+   * Which message is currently being read aloud (header Play loop OR a
+   * per-message Play button) and which word index inside it the engine
+   * just announced via the `boundary` event. Used by `<MessageBody>` to
+   * paint a highlight under the spoken word.
+   */
+  const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
+  const [currentWordIdx, setCurrentWordIdx] = useState<number | null>(null);
+
   const stopPlayingStory = useCallback(() => {
     isPlayingStoryRef.current = false;
     setIsPlayingStory(false);
+    setPlayingMsgId(null);
+    setCurrentWordIdx(null);
     voice.stopSpeaking();
   }, [voice]);
 
@@ -173,13 +230,54 @@ export default function Story() {
         if (!text) continue;
         const lang = resolveMessageLanguage(msg);
         const rate = rateForLanguage(lang);
-        await voice.speak(text, lang, rate);
+        setPlayingMsgId(msg.id);
+        setCurrentWordIdx(null);
+        await voice.speak(text, lang, rate, {
+          onWord: ({ wordIndex }) => setCurrentWordIdx(wordIndex),
+        });
       }
     } finally {
       isPlayingStoryRef.current = false;
       setIsPlayingStory(false);
+      setPlayingMsgId(null);
+      setCurrentWordIdx(null);
     }
   }, [messages, voice, resolveMessageLanguage, rateForLanguage, stopPlayingStory]);
+
+  /**
+   * Read a single message aloud (per-message Play button). If the same
+   * message is already playing, acts as a Stop button. Cancels any other
+   * ongoing playback (header loop or another message) so only one voice
+   * is ever audible.
+   */
+  const handlePlayMessage = useCallback(
+    async (msg: { id: number; content: string; role: string; language?: string | null }) => {
+      if (playingMsgId === msg.id) {
+        stopPlayingStory();
+        return;
+      }
+      // Cancel any ongoing playback (header loop or other message).
+      isPlayingStoryRef.current = false;
+      setIsPlayingStory(false);
+      voice.stopSpeaking();
+
+      const text = msg.content?.trim();
+      if (!text) return;
+      const lang = resolveMessageLanguage(msg);
+      const rate = rateForLanguage(lang);
+      setPlayingMsgId(msg.id);
+      setCurrentWordIdx(null);
+      try {
+        await voice.speak(text, lang, rate, {
+          onWord: ({ wordIndex }) => setCurrentWordIdx(wordIndex),
+        });
+      } finally {
+        setPlayingMsgId((cur) => (cur === msg.id ? null : cur));
+        setCurrentWordIdx(null);
+      }
+    },
+    [playingMsgId, voice, resolveMessageLanguage, rateForLanguage, stopPlayingStory],
+  );
 
   // If the user leaves the page or the messages list reloads while playing,
   // make sure we don't keep speaking stale audio.
@@ -838,7 +936,12 @@ export default function Story() {
                 </div>
               ) : (
                 <div className="relative">
-                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                  <MessageBody
+                    text={msg.content}
+                    highlightWord={
+                      playingMsgId === msg.id ? currentWordIdx : null
+                    }
+                  />
                   {settings.viewLanguage &&
                     settings.viewLanguage !== VIEW_OFF && (
                       <TranslatedLine
@@ -846,7 +949,65 @@ export default function Story() {
                         toLang={settings.viewLanguage}
                       />
                     )}
+                  {/*
+                    Provenance badge: show the BCP-47 language for every
+                    message and, for AI-authored messages, also the model
+                    that generated this paragraph. Pulled from the row's
+                    own columns so historical attribution stays accurate
+                    even after the active model is changed mid-story.
+                  */}
+                  {(msg.language || msg.model) && (
+                    <div
+                      className="mt-1 flex flex-wrap gap-1 text-[10px] font-sans text-muted-foreground/70 select-none"
+                      data-testid={`message-meta-${msg.id}`}
+                    >
+                      {msg.language && (
+                        <span
+                          className="px-1.5 py-0.5 rounded bg-muted/40"
+                          data-testid={`message-language-${msg.id}`}
+                          title="Language this passage was authored in"
+                        >
+                          {msg.language}
+                        </span>
+                      )}
+                      {msg.role === "assistant" && msg.model && (
+                        <span
+                          className="px-1.5 py-0.5 rounded bg-muted/40"
+                          data-testid={`message-model-${msg.id}`}
+                          title="AI model that generated this passage"
+                        >
+                          {msg.model}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <div className="absolute -right-8 top-0.5 flex flex-col gap-1 opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity">
+                    <button
+                      onClick={() => handlePlayMessage(msg)}
+                      aria-label={
+                        playingMsgId === msg.id
+                          ? "Stop reading this passage"
+                          : "Read this passage aloud"
+                      }
+                      title={
+                        playingMsgId === msg.id
+                          ? "Stop reading this passage"
+                          : "Read this passage aloud"
+                      }
+                      data-testid={`button-play-message-${msg.id}`}
+                      className={cn(
+                        "p-1 rounded",
+                        playingMsgId === msg.id
+                          ? "text-primary"
+                          : "text-muted-foreground hover:text-primary",
+                      )}
+                    >
+                      {playingMsgId === msg.id ? (
+                        <StopCircle className="w-3.5 h-3.5" />
+                      ) : (
+                        <Volume2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                     <button
                       onClick={() => startEdit(msg.id, msg.content)}
                       aria-label="Edit passage"

@@ -35,6 +35,16 @@ interface AppConfig {
   };
 }
 
+/**
+ * Read `config.json` fresh on every call. The file holds the OpenRouter
+ * API key/URL/model and operators expect to swap credentials live without
+ * restarting the API server. Caching the parsed config at module load
+ * meant edits sat dormant until the next deploy — read on demand instead.
+ *
+ * The file is tiny and reads are cheap; we silently fall back to env
+ * vars and built-in defaults when it's missing or malformed so the server
+ * stays available even if the file is mid-edit.
+ */
 function loadConfig(): AppConfig {
   try {
     const raw = readFileSync(join(process.cwd(), "config.json"), "utf-8");
@@ -44,12 +54,13 @@ function loadConfig(): AppConfig {
   }
 }
 
-const config = loadConfig();
-
-const DEFAULT_MODEL =
-  config.openrouter?.model?.trim() ||
-  process.env.OPENROUTER_MODEL ||
-  "openrouter/free";
+function getDefaultModel(cfg: AppConfig = loadConfig()): string {
+  return (
+    cfg.openrouter?.model?.trim() ||
+    process.env.OPENROUTER_MODEL ||
+    "openrouter/free"
+  );
+}
 
 const router: IRouter = Router();
 
@@ -76,16 +87,20 @@ function buildSystemPrompt(opts: {
   return `You are a collaborative storytelling AI friend. The user and you are writing a story together, taking turns. ${taskClause} Be imaginative and engaging. Your response must be at most ${maxWords} words long — stop at a natural sentence boundary within that limit.${langClause}`;
 }
 
-function getClient(apiKey?: string | null, apiUrl?: string | null): OpenAI {
+function getClient(
+  apiKey?: string | null,
+  apiUrl?: string | null,
+  cfg: AppConfig = loadConfig(),
+): OpenAI {
   const resolvedKey =
     (apiKey?.trim() ||
-      config.openrouter?.apiKey?.trim().split(".")[0] ||
+      cfg.openrouter?.apiKey?.trim().split(".")[0] ||
       process.env.AI_INTEGRATIONS_OPENROUTER_API_KEY) ??
     "dummy";
 
   const resolvedUrl =
     apiUrl?.trim() ||
-    config.openrouter?.apiUrl?.trim() ||
+    cfg.openrouter?.apiUrl?.trim() ||
     process.env.AI_INTEGRATIONS_OPENROUTER_BASE_URL;
 
   if (resolvedUrl && resolvedKey) {
@@ -250,8 +265,9 @@ router.post(
 
     let fullResponse = "";
 
-    const client = getClient(apiKey, apiUrl);
-    const effectiveModel = model?.trim() || DEFAULT_MODEL;
+    const cfg = loadConfig();
+    const client = getClient(apiKey, apiUrl, cfg);
+    const effectiveModel = model?.trim() || getDefaultModel(cfg);
     const maxWords = maxTokens ?? 10;
     const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
 
@@ -286,6 +302,10 @@ router.post(
           // Streaming branch carries no explicit AI-language hint, so fall
           // back to the user-message language (best guess for TTS).
           language: language ?? null,
+          // Record which model produced this paragraph so the UI can show
+          // provenance and debugging stays accurate when the active
+          // model is changed mid-conversation.
+          model: effectiveModel,
         });
       }
 
@@ -345,8 +365,9 @@ router.post(
       return;
     }
 
-    const client = getClient(apiKey, apiUrl);
-    const effectiveModel = model?.trim() || DEFAULT_MODEL;
+    const cfg = loadConfig();
+    const client = getClient(apiKey, apiUrl, cfg);
+    const effectiveModel = model?.trim() || getDefaultModel(cfg);
     const maxWords = maxTokens ?? 10;
     const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
 
@@ -453,6 +474,9 @@ router.post(
           // The AI was instructed to respond in `language`; persist that so
           // TTS playback later reads this paragraph in the matching voice.
           language: language ?? null,
+          // Record the actual model that produced this paragraph so the
+          // UI can display provenance per-message.
+          model: effectiveModel,
         })
         .returning();
 
@@ -595,8 +619,9 @@ router.post(
         content: m.content,
       }));
 
-    const client = getClient(apiKey, apiUrl);
-    const effectiveModel = model?.trim() || DEFAULT_MODEL;
+    const cfg = loadConfig();
+    const client = getClient(apiKey, apiUrl, cfg);
+    const effectiveModel = model?.trim() || getDefaultModel(cfg);
     const maxWords = maxTokens ?? 10;
     const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
 
@@ -666,6 +691,10 @@ router.post(
         // Regeneration honoured the requested `language`; record it so the
         // refreshed paragraph plays back in the right voice next time.
         ...(language !== undefined ? { language: language ?? null } : {}),
+        // The paragraph was just (re)written by `effectiveModel`, so the
+        // stored model attribution must reflect that — otherwise the UI
+        // would still show the old model badge from the prior generation.
+        model: effectiveModel,
       })
       .where(eq(messagesTable.id, messageId))
       .returning();
@@ -690,8 +719,9 @@ router.post("/openrouter/completions", async (req, res): Promise<void> => {
     apiUrl,
   } = parsed.data;
 
-  const client = getClient(apiKey, apiUrl);
-  const effectiveModel = model?.trim() || DEFAULT_MODEL;
+  const cfg = loadConfig();
+  const client = getClient(apiKey, apiUrl, cfg);
+  const effectiveModel = model?.trim() || getDefaultModel(cfg);
   const maxWords = maxTokens ?? 10;
   const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
 

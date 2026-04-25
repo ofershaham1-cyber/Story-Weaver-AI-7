@@ -16,5 +16,10 @@ export interface OpenrouterMessage {
    * @nullable
    */
   language?: string | null;
+  /**
+   * Identifier of the AI model that produced this message (e.g. "meta-llama/llama-4-scout"). Null for user-authored messages.
+   * @nullable
+   */
+  model?: string | null;
   createdAt: Date;
 }

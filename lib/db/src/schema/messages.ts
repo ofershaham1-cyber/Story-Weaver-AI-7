@@ -19,6 +19,14 @@ export const messages = pgTable("messages", {
    * Nullable for backwards compatibility with pre-migration rows.
    */
   language: text("language"),
+  /**
+   * Identifier of the AI model that generated this message
+   * (e.g. "meta-llama/llama-4-scout"). Only populated for assistant
+   * messages — user-authored rows leave it null. Persisted so the UI
+   * can show provenance per-paragraph and so debugging stays accurate
+   * when the active model changes mid-conversation.
+   */
+  model: text("model"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

@@ -57,6 +57,12 @@ export const GetOpenrouterConversationResponse = zod.object({
         .describe(
           "BCP-47 language tag of the message content (used to pick the right TTS voice).",
         ),
+      model: zod
+        .string()
+        .nullish()
+        .describe(
+          'Identifier of the AI model that produced this message (e.g. \"meta-llama\/llama-4-scout\"). Null for user-authored messages.',
+        ),
       createdAt: zod.coerce.date(),
     }),
   ),
@@ -96,6 +102,12 @@ export const UpdateOpenrouterMessageResponse = zod.object({
     .nullish()
     .describe(
       "BCP-47 language tag of the message content (used to pick the right TTS voice).",
+    ),
+  model: zod
+    .string()
+    .nullish()
+    .describe(
+      'Identifier of the AI model that produced this message (e.g. \"meta-llama\/llama-4-scout\"). Null for user-authored messages.',
     ),
   createdAt: zod.coerce.date(),
 });
@@ -142,6 +154,12 @@ export const RegenerateOpenrouterMessageResponse = zod.object({
     .nullish()
     .describe(
       "BCP-47 language tag of the message content (used to pick the right TTS voice).",
+    ),
+  model: zod
+    .string()
+    .nullish()
+    .describe(
+      'Identifier of the AI model that produced this message (e.g. \"meta-llama\/llama-4-scout\"). Null for user-authored messages.',
     ),
   createdAt: zod.coerce.date(),
 });
@@ -208,6 +226,12 @@ export const ListOpenrouterMessagesResponseItem = zod.object({
     .nullish()
     .describe(
       "BCP-47 language tag of the message content (used to pick the right TTS voice).",
+    ),
+  model: zod
+    .string()
+    .nullish()
+    .describe(
+      'Identifier of the AI model that produced this message (e.g. \"meta-llama\/llama-4-scout\"). Null for user-authored messages.',
     ),
   createdAt: zod.coerce.date(),
 });

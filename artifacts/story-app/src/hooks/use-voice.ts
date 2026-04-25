@@ -86,6 +86,12 @@ export function useVoice(enabled: boolean) {
   /**
    * Speak `text` using the browser's SpeechSynthesis API.
    *
+   * IMPORTANT: `enabled` only gates *listening* (microphone access used by
+   * blind-mode auto-loop). Speaking is always permitted because the page
+   * exposes a Play button on the header and per-message Play buttons that
+   * users invoke explicitly — gating speak on `enabled` made those buttons
+   * silently no-op when blind mode was off.
+   *
    * @param text     Text to read aloud.
    * @param language BCP-47 tag for the text (e.g. "en-US"). Determines both
    *                 the picked voice and the utterance.lang.
@@ -93,15 +99,41 @@ export function useVoice(enabled: boolean) {
    *                 (~0.5–2.0). Defaults to 0.95 to preserve previous
    *                 behaviour. Caller-provided rate lets the story page
    *                 honour per-language playback-speed preferences.
+   * @param opts     Optional callbacks. `onWord` is invoked for each word
+   *                 boundary the engine reports, mapped from `charIndex`
+   *                 to a 0-based word index over the input text. Browsers
+   *                 that don't fire `onboundary` simply produce no
+   *                 highlights — playback is unaffected.
    */
   const speak = useCallback(
-    (text: string, language: string = "en-US", rate: number = 0.95): Promise<void> => {
+    (
+      text: string,
+      language: string = "en-US",
+      rate: number = 0.95,
+      opts?: { onWord?: (info: { wordIndex: number; charIndex: number }) => void },
+    ): Promise<void> => {
       return new Promise((resolve) => {
-        if (!enabled || !synthRef.current) {
+        if (!synthRef.current) {
           resolve();
           return;
         }
         synthRef.current.cancel();
+
+        // Pre-compute [start, end) char ranges for every non-whitespace
+        // word in the original text so we can map the engine-reported
+        // `charIndex` back to a 0-based word index. Using the same
+        // splitting strategy the renderer uses keeps indices aligned.
+        const wordRanges: Array<[number, number]> = [];
+        if (opts?.onWord) {
+          const parts = text.split(/(\s+)/);
+          let pos = 0;
+          for (const part of parts) {
+            if (part.length === 0) continue;
+            if (/\S/.test(part)) wordRanges.push([pos, pos + part.length]);
+            pos += part.length;
+          }
+        }
+
         const utterance = new SpeechSynthesisUtterance(text);
         // Clamp to the spec's allowed range so an out-of-bounds value from
         // settings doesn't silently disable speech.
@@ -113,6 +145,32 @@ export function useVoice(enabled: boolean) {
         utterance.lang = language;
         const voice = pickVoice(language);
         if (voice) utterance.voice = voice;
+
+        if (opts?.onWord && wordRanges.length > 0) {
+          let lastWordIdx = -1;
+          utterance.onboundary = (e: SpeechSynthesisEvent) => {
+            // Some engines emit "sentence" or "punctuation" boundaries too;
+            // ignore everything except word boundaries.
+            if (e.name && e.name !== "word") return;
+            const ci = e.charIndex ?? 0;
+            // Walk forward from the last reported word — boundaries arrive
+            // monotonically so we don't need to re-scan from the start.
+            for (let i = Math.max(lastWordIdx, 0); i < wordRanges.length; i++) {
+              const [s, end] = wordRanges[i];
+              if (ci >= s && ci < end) {
+                lastWordIdx = i;
+                opts.onWord!({ wordIndex: i, charIndex: ci });
+                return;
+              }
+              if (ci < s) {
+                lastWordIdx = i;
+                opts.onWord!({ wordIndex: i, charIndex: ci });
+                return;
+              }
+            }
+          };
+        }
+
         utterance.onstart = () => setState("speaking");
         utterance.onend = () => {
           setState("idle");
@@ -125,7 +183,7 @@ export function useVoice(enabled: boolean) {
         synthRef.current.speak(utterance);
       });
     },
-    [enabled, pickVoice]
+    [pickVoice]
   );
 
   const stopSpeaking = useCallback(() => {
