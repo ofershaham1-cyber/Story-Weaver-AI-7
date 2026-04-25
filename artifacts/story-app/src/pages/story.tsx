@@ -214,6 +214,9 @@ export default function Story() {
   }, [voice]);
 
   const handlePlayStory = useCallback(async () => {
+    console.info(
+      `[story] handlePlayStory click playing=${isPlayingStoryRef.current} msgs=${messages?.length ?? 0}`,
+    );
     if (isPlayingStoryRef.current) {
       // Second click acts as a Stop button.
       stopPlayingStory();
@@ -230,6 +233,9 @@ export default function Story() {
         if (!text) continue;
         const lang = resolveMessageLanguage(msg);
         const rate = rateForLanguage(lang);
+        console.info(
+          `[story] play-all → msg=${msg.id} lang=${lang} rate=${rate} chars=${text.length}`,
+        );
         setPlayingMsgId(msg.id);
         setCurrentWordIdx(null);
         await voice.speak(text, lang, rate, {
@@ -252,19 +258,28 @@ export default function Story() {
    */
   const handlePlayMessage = useCallback(
     async (msg: { id: number; content: string; role: string; language?: string | null }) => {
+      console.info(
+        `[story] handlePlayMessage click msg=${msg.id} alreadyPlaying=${playingMsgId === msg.id}`,
+      );
       if (playingMsgId === msg.id) {
         stopPlayingStory();
         return;
       }
-      // Cancel any ongoing playback (header loop or other message).
+      // Cancel any ongoing playback (header loop or other message). We do
+      // NOT call `voice.stopSpeaking()` here because `voice.speak()` itself
+      // safely tears down any prior utterance — calling cancel twice in
+      // the same tick triggers a Chrome bug where the new utterance fires
+      // its onend immediately with no audio.
       isPlayingStoryRef.current = false;
       setIsPlayingStory(false);
-      voice.stopSpeaking();
 
       const text = msg.content?.trim();
       if (!text) return;
       const lang = resolveMessageLanguage(msg);
       const rate = rateForLanguage(lang);
+      console.info(
+        `[story] play-one → msg=${msg.id} lang=${lang} rate=${rate} chars=${text.length}`,
+      );
       setPlayingMsgId(msg.id);
       setCurrentWordIdx(null);
       try {

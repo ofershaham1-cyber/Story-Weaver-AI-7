@@ -113,11 +113,14 @@ export function useVoice(enabled: boolean) {
       opts?: { onWord?: (info: { wordIndex: number; charIndex: number }) => void },
     ): Promise<void> => {
       return new Promise((resolve) => {
-        if (!synthRef.current) {
+        const synth = synthRef.current;
+        if (!synth) {
+          // Help the dev see why speech is silently doing nothing — this
+          // line lands in `logs/client.log` via the console wrapper.
+          console.warn("[useVoice.speak] no SpeechSynthesis available");
           resolve();
           return;
         }
-        synthRef.current.cancel();
 
         // Pre-compute [start, end) char ranges for every non-whitespace
         // word in the original text so we can map the engine-reported
@@ -134,53 +137,99 @@ export function useVoice(enabled: boolean) {
           }
         }
 
-        const utterance = new SpeechSynthesisUtterance(text);
-        // Clamp to the spec's allowed range so an out-of-bounds value from
-        // settings doesn't silently disable speech.
-        utterance.rate = Math.min(Math.max(rate, 0.1), 10);
-        utterance.pitch = 1.0;
-        // Critical: without setting `lang` (and ideally a matching voice) the
-        // browser falls back to the system default, which on some machines is
-        // not the language of the text being spoken.
-        utterance.lang = language;
-        const voice = pickVoice(language);
-        if (voice) utterance.voice = voice;
+        const buildUtterance = () => {
+          const utterance = new SpeechSynthesisUtterance(text);
+          // Clamp to the spec's allowed range so an out-of-bounds value from
+          // settings doesn't silently disable speech.
+          utterance.rate = Math.min(Math.max(rate, 0.1), 10);
+          utterance.pitch = 1.0;
+          // Critical: without setting `lang` (and ideally a matching voice) the
+          // browser falls back to the system default, which on some machines is
+          // not the language of the text being spoken.
+          utterance.lang = language;
+          const voice = pickVoice(language);
+          if (voice) utterance.voice = voice;
 
-        if (opts?.onWord && wordRanges.length > 0) {
-          let lastWordIdx = -1;
-          utterance.onboundary = (e: SpeechSynthesisEvent) => {
-            // Some engines emit "sentence" or "punctuation" boundaries too;
-            // ignore everything except word boundaries.
-            if (e.name && e.name !== "word") return;
-            const ci = e.charIndex ?? 0;
-            // Walk forward from the last reported word — boundaries arrive
-            // monotonically so we don't need to re-scan from the start.
-            for (let i = Math.max(lastWordIdx, 0); i < wordRanges.length; i++) {
-              const [s, end] = wordRanges[i];
-              if (ci >= s && ci < end) {
-                lastWordIdx = i;
-                opts.onWord!({ wordIndex: i, charIndex: ci });
-                return;
+          if (opts?.onWord && wordRanges.length > 0) {
+            let lastWordIdx = -1;
+            utterance.onboundary = (e: SpeechSynthesisEvent) => {
+              // Some engines emit "sentence" or "punctuation" boundaries too;
+              // ignore everything except word boundaries.
+              if (e.name && e.name !== "word") return;
+              const ci = e.charIndex ?? 0;
+              // Walk forward from the last reported word — boundaries arrive
+              // monotonically so we don't need to re-scan from the start.
+              for (let i = Math.max(lastWordIdx, 0); i < wordRanges.length; i++) {
+                const [s, end] = wordRanges[i];
+                if (ci >= s && ci < end) {
+                  lastWordIdx = i;
+                  opts.onWord!({ wordIndex: i, charIndex: ci });
+                  return;
+                }
+                if (ci < s) {
+                  lastWordIdx = i;
+                  opts.onWord!({ wordIndex: i, charIndex: ci });
+                  return;
+                }
               }
-              if (ci < s) {
-                lastWordIdx = i;
-                opts.onWord!({ wordIndex: i, charIndex: ci });
-                return;
-              }
-            }
+            };
+          }
+
+          let resolved = false;
+          const settle = () => {
+            if (resolved) return;
+            resolved = true;
+            setState("idle");
+            resolve();
           };
-        }
+          utterance.onstart = () => {
+            console.info(
+              `[useVoice.speak] onstart lang=${language} rate=${utterance.rate} voice=${utterance.voice?.name ?? "(default)"} chars=${text.length}`,
+            );
+            setState("speaking");
+          };
+          utterance.onend = () => {
+            console.info("[useVoice.speak] onend");
+            settle();
+          };
+          // SpeechSynthesisErrorEvent.error gives a useful enum like
+          // "interrupted" / "canceled" / "synthesis-failed" — surface it
+          // so silent failures are no longer mysterious.
+          utterance.onerror = (e: SpeechSynthesisErrorEvent) => {
+            console.warn(`[useVoice.speak] onerror error=${e.error}`);
+            settle();
+          };
+          return utterance;
+        };
 
-        utterance.onstart = () => setState("speaking");
-        utterance.onend = () => {
-          setState("idle");
-          resolve();
+        const start = () => {
+          // Chrome occasionally pauses the synth queue when the page has
+          // been backgrounded or when an iframe loses focus; resume() is
+          // a no-op if it's already playing and prevents a class of
+          // "speak silently does nothing" bugs.
+          try {
+            synth.resume();
+          } catch {
+            // ignore — resume isn't supported everywhere
+          }
+          const utterance = buildUtterance();
+          console.info(
+            `[useVoice.speak] speak() pending=${synth.pending} speaking=${synth.speaking} paused=${synth.paused}`,
+          );
+          synth.speak(utterance);
         };
-        utterance.onerror = () => {
-          setState("idle");
-          resolve();
-        };
-        synthRef.current.speak(utterance);
+
+        // Chrome has a long-standing race where calling cancel() and
+        // speak() in the same tick causes the new utterance to fire its
+        // onend immediately with no audio. If the queue is currently
+        // busy we cancel and wait one macrotask before queuing the new
+        // utterance; if it's idle we skip the cancel entirely.
+        if (synth.speaking || synth.pending) {
+          synth.cancel();
+          setTimeout(start, 60);
+        } else {
+          start();
+        }
       });
     },
     [pickVoice]
