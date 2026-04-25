@@ -596,11 +596,21 @@ export default function Story() {
             )}
           </Button>
 
-          {/* Quick STT language picker */}
+          {/* Quick STT (speech recognition) language picker */}
           <SttLanguageSwitcher
             value={settings.stt.language}
             onChange={(lang) =>
               updateSettings({ stt: { ...settings.stt, language: lang } })
+            }
+          />
+
+          {/* Quick AI response language picker — controls the BCP-47
+              `language` field sent on every AI completion request. */}
+          <SttLanguageSwitcher
+            variant="ai"
+            value={settings.stt.aiLanguage}
+            onChange={(lang) =>
+              updateSettings({ stt: { ...settings.stt, aiLanguage: lang } })
             }
           />
 
