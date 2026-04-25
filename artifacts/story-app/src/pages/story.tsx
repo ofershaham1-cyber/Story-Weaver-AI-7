@@ -328,7 +328,16 @@ export default function Story() {
       lastCycleKeyRef.current = null;
       gaveUpRef.current = false;
     }
-  }, [settings.blindMode, voice]);
+    // IMPORTANT: do NOT depend on `voice` here. `useVoice()` returns a fresh
+    // object literal on every render, so depending on `voice` re-runs this
+    // effect after every render — including the one triggered by clicking
+    // Play (setIsPlayingStory/setPlayingMsgId). That would call
+    // `voice.stopSpeaking()` immediately after `voice.speak()` queued an
+    // utterance, producing `onerror=interrupted` and silent playback.
+    // The individual methods are useCallback-stable, so we depend on them
+    // directly instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.blindMode, voice.stopSpeaking, voice.stopListening]);
 
   // Reset gave-up flag whenever new messages arrive (fresh AI turn = fresh chance to listen)
   useEffect(() => {
@@ -492,7 +501,21 @@ export default function Story() {
     }
 
     runLoop();
-  }, [messages, isTyping, settings.blindMode, voice, sendMessage, playSound, refreshTick, clearIntervalRetry]);
+    // See note above: depending on `voice` re-runs this effect on every
+    // render and causes a fresh blind-loop iteration to start mid-flight.
+    // The individual methods are useCallback-stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    messages,
+    isTyping,
+    settings.blindMode,
+    voice.speak,
+    voice.listenOnce,
+    sendMessage,
+    playSound,
+    refreshTick,
+    clearIntervalRetry,
+  ]);
 
   // Cleanup the interval-retry timer when blind mode turns off / unmount
   useEffect(() => {
