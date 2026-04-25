@@ -294,16 +294,27 @@ export default function Story() {
     [playingMsgId, voice, resolveMessageLanguage, rateForLanguage, stopPlayingStory],
   );
 
-  // If the user leaves the page or the messages list reloads while playing,
-  // make sure we don't keep speaking stale audio.
+  /*
+   * Stop any in-flight TTS when the page unmounts. We MUST NOT depend on
+   * `voice` here: `useVoice()` returns a fresh object on every render
+   * (its internal `state` is part of the returned object), so depending
+   * on `voice` would re-run the cleanup on every render and call
+   * `cancel()` immediately after `speak()` — which produces an
+   * `interrupted` SpeechSynthesisErrorEvent and silent playback.
+   *
+   * Instead, capture the latest `voice.stopSpeaking` in a ref and run
+   * the cleanup only on unmount.
+   */
+  const stopSpeakingRef = useRef(voice.stopSpeaking);
+  stopSpeakingRef.current = voice.stopSpeaking;
   useEffect(() => {
     return () => {
       if (isPlayingStoryRef.current) {
         isPlayingStoryRef.current = false;
-        voice.stopSpeaking();
+        stopSpeakingRef.current();
       }
     };
-  }, [voice]);
+  }, []);
 
   useEffect(() => {
     blindModeEnabledRef.current = settings.blindMode;
