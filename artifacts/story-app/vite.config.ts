@@ -89,8 +89,10 @@ function clientLogPlugin(): Plugin {
             children: `(function(){
   if (window.__clientLogInstalled) return;
   window.__clientLogInstalled = true;
-  // Resolve relative to <base href> so this works under any BASE_PATH.
-  var endpoint = new URL("__client-log", document.baseURI).pathname;
+  // The dev-server middleware is mounted at the server root, so use an
+  // absolute path. A relative URL would resolve against document.baseURI
+  // (the current route) and 404 on subpaths like /story/1.
+  var endpoint = "/__client-log";
   var queue = [];
   var flushTimer = null;
   function flush(){
