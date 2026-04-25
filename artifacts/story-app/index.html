@@ -3,6 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!--
+      Story Together intentionally renders multilingual content (the original
+      story line plus an in-app translation). Without this guard Chrome and
+      similar browsers run their own page translator on top, mutating the
+      React-managed text nodes and triggering "Failed to execute 'removeChild'
+      on 'Node'" runtime errors. We do our own translation via TranslatedLine.
+    -->
+    <meta name="google" content="notranslate" />
     <title>Story Builder</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -10,7 +18,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" translate="no" class="notranslate"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
