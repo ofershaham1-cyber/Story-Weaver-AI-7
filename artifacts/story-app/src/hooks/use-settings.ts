@@ -45,7 +45,23 @@ export interface StorySettings {
   ttsRates: Record<string, number>;
   /** Default playback rate when a language has no explicit override. */
   ttsRateDefault: number;
+  /**
+   * Schema version for the persisted settings blob. Bumped whenever a
+   * default changes in a way that should overwrite a previously saved
+   * value (e.g. when a default was wrong and the user almost certainly
+   * never explicitly chose it). The migration in `load()` re-applies the
+   * relevant defaults for any version below the current one.
+   */
+  settingsVersion: number;
 }
+
+/**
+ * Bump this when you want existing localStorage payloads to be treated
+ * as outdated and re-defaulted in `load()`.
+ *  - 1: introduced after `ttsTranslationMode` was added with a `"off"`
+ *       default; bumping to "with" so picking View languages auto-plays.
+ */
+const SETTINGS_VERSION = 1;
 
 const STORAGE_KEY = "story-together-settings";
 
@@ -60,9 +76,13 @@ const DEFAULTS: StorySettings = {
   gameMode: "auto",
   stt: { ...STT_DEFAULTS },
   viewLanguages: [],
-  ttsTranslationMode: "off",
+  // Default: "with" → as soon as the user picks a View language it gets
+  // spoken alongside the original. Users who'd rather only see (not hear)
+  // translations can flip this to "off" from the Play dropdown.
+  ttsTranslationMode: "with",
   ttsRates: {},
   ttsRateDefault: 0.95,
+  settingsVersion: SETTINGS_VERSION,
 };
 
 /** Shape of legacy settings persisted before the multi-language migration. */
@@ -86,14 +106,23 @@ function load(): StorySettings {
       ) {
         viewLanguages = [parsed.viewLanguage];
       }
+      const storedVersion = parsed.settingsVersion ?? 0;
+      // Schema migration: any payload below the current version gets the
+      // affected fields re-defaulted. v1 forces ttsTranslationMode to the
+      // new default ("with") because the previous default "off" silently
+      // suppressed translation playback even when languages were picked.
+      const ttsTranslationMode =
+        storedVersion < 1
+          ? DEFAULTS.ttsTranslationMode
+          : parsed.ttsTranslationMode ?? DEFAULTS.ttsTranslationMode;
       return {
         ...DEFAULTS,
         ...parsed,
         stt: { ...DEFAULTS.stt, ...(parsed.stt ?? {}) },
         ttsRates: { ...DEFAULTS.ttsRates, ...(parsed.ttsRates ?? {}) },
         viewLanguages,
-        ttsTranslationMode:
-          parsed.ttsTranslationMode ?? DEFAULTS.ttsTranslationMode,
+        ttsTranslationMode,
+        settingsVersion: SETTINGS_VERSION,
       };
     }
   } catch {}
