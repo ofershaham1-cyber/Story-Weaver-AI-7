@@ -213,6 +213,12 @@ export function useVoice(enabled: boolean) {
             // ignore — resume isn't supported everywhere
           }
           const utterance = buildUtterance();
+          // Single-line, easy-to-grep summary of what's about to be spoken.
+          // Emitted once per `voice.speak()` call (NOT per word boundary)
+          // so the log volume stays low even on long stories.
+          console.info(
+            `[tts-play] lang=${language} speed=${utterance.rate} chars=${text.length}`,
+          );
           console.info(
             `[useVoice.speak] speak() pending=${synth.pending} speaking=${synth.speaking} paused=${synth.paused}`,
           );

@@ -17,11 +17,11 @@ import { useSounds } from "@/hooks/use-sounds";
 import { OpenrouterSettingsDialog } from "@/components/openrouter-settings-dialog";
 import { SttSettingsDialog } from "@/components/stt-settings-dialog";
 import { TtsSpeedDialog } from "@/components/tts-speed-dialog";
-import {
-  SttLanguageSwitcher,
-  VIEW_OFF,
-} from "@/components/stt-language-switcher";
+import { SttLanguageSwitcher } from "@/components/stt-language-switcher";
+import { ViewLanguagesSwitcher } from "@/components/view-languages-switcher";
+import { TtsTranslationModeSwitcher } from "@/components/tts-translation-mode-switcher";
 import { TranslatedLine } from "@/components/translated-line";
+import { translate, toGoogleLang } from "@/lib/translate";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { DebugPanel } from "@/components/debug-panel";
 import { Button } from "@/components/ui/button";
@@ -197,6 +197,94 @@ export default function Story() {
   );
 
   /**
+   * Build the ordered list of (text, lang, rate) units that should be
+   * spoken for a single message, honouring the current
+   * `ttsTranslationMode` and `viewLanguages` settings.
+   *
+   * Translations are fetched through `queryClient.fetchQuery` using the
+   * same key as `<TranslatedLine>` so on-screen translations and
+   * playback share the same cache — no duplicate network requests.
+   *
+   * `isOriginal` is set for the original-language unit so the play
+   * handlers can keep highlighting word-by-word in the rendered original
+   * paragraph (which matches the visible text). Translation units don't
+   * highlight because the visible word-mapping wouldn't line up.
+   */
+  const buildPlayUnits = useCallback(
+    async (msg: {
+      id: number;
+      content: string;
+      role: string;
+      language?: string | null;
+    }): Promise<
+      Array<{ text: string; lang: string; rate: number; isOriginal: boolean }>
+    > => {
+      const text = msg.content?.trim() ?? "";
+      if (!text) return [];
+
+      const units: Array<{
+        text: string;
+        lang: string;
+        rate: number;
+        isOriginal: boolean;
+      }> = [];
+
+      const origLang = resolveMessageLanguage(msg);
+      const origRate = rateForLanguage(origLang);
+
+      const includeOriginal = settings.ttsTranslationMode !== "only";
+      const includeTranslations =
+        settings.ttsTranslationMode !== "off" &&
+        settings.viewLanguages.length > 0;
+
+      if (includeOriginal) {
+        units.push({ text, lang: origLang, rate: origRate, isOriginal: true });
+      }
+
+      if (includeTranslations) {
+        for (const target of settings.viewLanguages) {
+          const googleTarget = toGoogleLang(target);
+          try {
+            const translated = await queryClient.fetchQuery({
+              queryKey: ["translation", googleTarget, text],
+              queryFn: () =>
+                translate({
+                  finalTranscriptProxy: text,
+                  fromLang: "auto",
+                  toLang: googleTarget,
+                }),
+              staleTime: Infinity,
+              gcTime: Infinity,
+            });
+            if (translated && translated !== "translation error") {
+              units.push({
+                text: translated,
+                lang: target,
+                rate: rateForLanguage(target),
+                isOriginal: false,
+              });
+            }
+          } catch (err) {
+            console.warn(
+              `[story] translation fetch failed msg=${msg.id} target=${target}`,
+              err,
+            );
+          }
+        }
+      }
+
+      return units;
+    },
+    [
+      queryClient,
+      resolveMessageLanguage,
+      rateForLanguage,
+      settings.ttsTranslationMode,
+      settings.viewLanguages,
+    ],
+  );
+
+  /**
    * Which message is currently being read aloud (header Play loop OR a
    * per-message Play button) and which word index inside it the engine
    * just announced via the `boundary` event. Used by `<MessageBody>` to
@@ -229,18 +317,23 @@ export default function Story() {
     try {
       for (const msg of messages) {
         if (!isPlayingStoryRef.current) break;
-        const text = msg.content?.trim();
-        if (!text) continue;
-        const lang = resolveMessageLanguage(msg);
-        const rate = rateForLanguage(lang);
-        console.info(
-          `[story] play-all → msg=${msg.id} lang=${lang} rate=${rate} chars=${text.length}`,
-        );
+        const units = await buildPlayUnits(msg);
+        if (units.length === 0) continue;
+        if (!isPlayingStoryRef.current) break;
         setPlayingMsgId(msg.id);
         setCurrentWordIdx(null);
-        await voice.speak(text, lang, rate, {
-          onWord: ({ wordIndex }) => setCurrentWordIdx(wordIndex),
-        });
+        for (const unit of units) {
+          if (!isPlayingStoryRef.current) break;
+          console.info(
+            `[story] play-all → msg=${msg.id} ${unit.isOriginal ? "original" : "translation"} lang=${unit.lang} rate=${unit.rate} chars=${unit.text.length}`,
+          );
+          setCurrentWordIdx(null);
+          await voice.speak(unit.text, unit.lang, unit.rate, {
+            onWord: unit.isOriginal
+              ? ({ wordIndex }) => setCurrentWordIdx(wordIndex)
+              : undefined,
+          });
+        }
       }
     } finally {
       isPlayingStoryRef.current = false;
@@ -248,7 +341,7 @@ export default function Story() {
       setPlayingMsgId(null);
       setCurrentWordIdx(null);
     }
-  }, [messages, voice, resolveMessageLanguage, rateForLanguage, stopPlayingStory]);
+  }, [messages, voice, buildPlayUnits, stopPlayingStory]);
 
   /**
    * Read a single message aloud (per-message Play button). If the same
@@ -273,25 +366,28 @@ export default function Story() {
       isPlayingStoryRef.current = false;
       setIsPlayingStory(false);
 
-      const text = msg.content?.trim();
-      if (!text) return;
-      const lang = resolveMessageLanguage(msg);
-      const rate = rateForLanguage(lang);
-      console.info(
-        `[story] play-one → msg=${msg.id} lang=${lang} rate=${rate} chars=${text.length}`,
-      );
+      const units = await buildPlayUnits(msg);
+      if (units.length === 0) return;
       setPlayingMsgId(msg.id);
       setCurrentWordIdx(null);
       try {
-        await voice.speak(text, lang, rate, {
-          onWord: ({ wordIndex }) => setCurrentWordIdx(wordIndex),
-        });
+        for (const unit of units) {
+          console.info(
+            `[story] play-one → msg=${msg.id} ${unit.isOriginal ? "original" : "translation"} lang=${unit.lang} rate=${unit.rate} chars=${unit.text.length}`,
+          );
+          setCurrentWordIdx(null);
+          await voice.speak(unit.text, unit.lang, unit.rate, {
+            onWord: unit.isOriginal
+              ? ({ wordIndex }) => setCurrentWordIdx(wordIndex)
+              : undefined,
+          });
+        }
       } finally {
         setPlayingMsgId((cur) => (cur === msg.id ? null : cur));
         setCurrentWordIdx(null);
       }
     },
-    [playingMsgId, voice, resolveMessageLanguage, rateForLanguage, stopPlayingStory],
+    [playingMsgId, voice, buildPlayUnits, stopPlayingStory],
   );
 
   /*
@@ -853,13 +949,20 @@ export default function Story() {
             }
           />
 
-          {/* On-screen translation language — when set, every paragraph is
-              translated below the original via Google Translate. */}
-          <SttLanguageSwitcher
-            variant="view"
+          {/* On-screen translation languages (multi-select). Each selected
+              BCP-47 code renders its own translated line below every
+              paragraph and (per `ttsTranslationMode`) is also spoken. */}
+          <ViewLanguagesSwitcher
             label="View"
-            value={settings.viewLanguage}
-            onChange={(lang) => updateSettings({ viewLanguage: lang })}
+            value={settings.viewLanguages}
+            onChange={(langs) => updateSettings({ viewLanguages: langs })}
+          />
+
+          {/* How translations are spoken: original only / both / translation only. */}
+          <TtsTranslationModeSwitcher
+            value={settings.ttsTranslationMode}
+            onChange={(mode) => updateSettings({ ttsTranslationMode: mode })}
+            hasTranslations={settings.viewLanguages.length > 0}
           />
 
           {/* Play / Stop the entire story — reads each saved message in
@@ -991,13 +1094,13 @@ export default function Story() {
                       playingMsgId === msg.id ? currentWordIdx : null
                     }
                   />
-                  {settings.viewLanguage &&
-                    settings.viewLanguage !== VIEW_OFF && (
-                      <TranslatedLine
-                        text={msg.content}
-                        toLang={settings.viewLanguage}
-                      />
-                    )}
+                  {settings.viewLanguages.map((lang) => (
+                    <TranslatedLine
+                      key={lang}
+                      text={msg.content}
+                      toLang={lang}
+                    />
+                  ))}
                   {/*
                     Provenance badge: show the BCP-47 language for every
                     message and, for AI-authored messages, also the model
