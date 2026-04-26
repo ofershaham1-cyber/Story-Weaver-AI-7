@@ -54,6 +54,37 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
+ * Turn an unknown error from a mutation/fetch into a single-line user-
+ * facing message. Tries to dig out the most useful field (`message`,
+ * server-side `error`, status text) without dumping the whole stack trace
+ * into the banner.
+ */
+function formatActionError(prefix: string, err: unknown): string {
+  if (!err) return prefix;
+  const anyErr = err as {
+    message?: string;
+    response?: { data?: { error?: string; message?: string }; statusText?: string; status?: number };
+    status?: number;
+    statusText?: string;
+  };
+  const detail =
+    anyErr.response?.data?.error ||
+    anyErr.response?.data?.message ||
+    anyErr.message ||
+    anyErr.response?.statusText ||
+    anyErr.statusText;
+  const code = anyErr.response?.status ?? anyErr.status;
+  if (detail && code) return `${prefix}: ${detail} (HTTP ${code})`;
+  if (detail) return `${prefix}: ${detail}`;
+  if (code) return `${prefix}: HTTP ${code}`;
+  try {
+    return `${prefix}: ${JSON.stringify(err)}`;
+  } catch {
+    return `${prefix}: ${String(err)}`;
+  }
+}
+
+/**
  * Render a message body word-by-word so that during TTS playback we can
  * highlight whichever word the engine is currently announcing.
  *
@@ -309,6 +340,12 @@ export default function Story() {
    */
   const [playingMsgId, setPlayingMsgId] = useState<number | null>(null);
   const [currentWordIdx, setCurrentWordIdx] = useState<number | null>(null);
+  // Which item *within* the currently playing message is being spoken
+  // right now: either {@link PLAY_ORIGINAL} for the source paragraph or
+  // a BCP-47 code for one of its translations. Used to draw a border
+  // around the exact line that's audible so the user can follow along
+  // when there are several translations stacked under each paragraph.
+  const [playingItem, setPlayingItem] = useState<string | null>(null);
   // Ref-mirror of `playingMsgId` so the blind-mode loop (which reads via
   // refs to avoid re-firing on every render) can synchronously check
   // whether a manual per-message playback is currently in progress and
@@ -319,11 +356,18 @@ export default function Story() {
   useEffect(() => {
     playingMsgIdRef.current = playingMsgId;
   }, [playingMsgId]);
+  // Local error surface: errors from imperative actions (regenerate,
+  // delete, edit) that don't go through `useStoryStream` would otherwise
+  // only emit a console.error + a beep; surface them in the same banner
+  // as `streamError` so the user can actually see what failed.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const displayedError = streamError ?? actionError;
 
   const stopPlayingStory = useCallback(() => {
     isPlayingStoryRef.current = false;
     setIsPlayingStory(false);
     setPlayingMsgId(null);
+    setPlayingItem(null);
     setCurrentWordIdx(null);
     voice.stopSpeaking();
   }, [voice]);
@@ -355,6 +399,8 @@ export default function Story() {
             `[story] play-all → msg=${msg.id} ${unit.isOriginal ? "original" : "translation"} lang=${unit.lang} rate=${unit.rate} chars=${unit.text.length}`,
           );
           setCurrentWordIdx(null);
+          // Tag which line is "live" so its row gets the playing border.
+          setPlayingItem(unit.isOriginal ? PLAY_ORIGINAL : unit.lang);
           await voice.speak(unit.text, unit.lang, unit.rate, {
             onWord: unit.isOriginal
               ? ({ wordIndex }) => setCurrentWordIdx(wordIndex)
@@ -366,6 +412,7 @@ export default function Story() {
       isPlayingStoryRef.current = false;
       setIsPlayingStory(false);
       setPlayingMsgId(null);
+      setPlayingItem(null);
       setCurrentWordIdx(null);
     }
   }, [messages, voice, buildPlayUnits, stopPlayingStory]);
@@ -377,11 +424,27 @@ export default function Story() {
    * is ever audible.
    */
   const handlePlayMessage = useCallback(
-    async (msg: { id: number; content: string; role: string; language?: string | null }) => {
+    async (
+      msg: { id: number; content: string; role: string; language?: string | null },
+      /**
+       * Optional starting item — either {@link PLAY_ORIGINAL} or a
+       * BCP-47 code from the message's play queue. When provided, the
+       * built unit list is sliced so playback begins at that item and
+       * continues through the rest of `ttsPlayOrder`. Used by the
+       * click-to-play handlers on the original and translated lines.
+       */
+      startItem?: string,
+    ) => {
       console.info(
-        `[story] handlePlayMessage click msg=${msg.id} alreadyPlaying=${playingMsgId === msg.id}`,
+        `[story] handlePlayMessage click msg=${msg.id} startItem=${startItem ?? "(default)"} alreadyPlaying=${playingMsgId === msg.id && playingItem === (startItem ?? null)}`,
       );
-      if (playingMsgId === msg.id) {
+      // Tapping the *same* line that's currently being spoken stops
+      // playback (acts as a toggle). When startItem is omitted we fall
+      // back to the prior "same message → stop" behaviour.
+      if (
+        playingMsgId === msg.id &&
+        (startItem === undefined || playingItem === startItem)
+      ) {
         stopPlayingStory();
         return;
       }
@@ -393,7 +456,64 @@ export default function Story() {
       isPlayingStoryRef.current = false;
       setIsPlayingStory(false);
 
-      const units = await buildPlayUnits(msg);
+      let units = await buildPlayUnits(msg);
+      if (units.length === 0) return;
+      // Honour the click-to-play starting point: drop everything before
+      // the requested item so playback begins at the line the user
+      // actually clicked. If the item isn't in the queue (e.g. the user
+      // clicked an old translation that was since removed from
+      // ttsPlayOrder) fall back to playing the whole queue.
+      if (startItem !== undefined) {
+        const startIdx = units.findIndex((u) =>
+          startItem === PLAY_ORIGINAL ? u.isOriginal : u.lang === startItem,
+        );
+        if (startIdx > 0) units = units.slice(startIdx);
+        else if (startIdx === -1) {
+          // Requested item isn't enabled in ttsPlayOrder. Synthesise a
+          // single ad-hoc unit so a click on a visible translation still
+          // plays even if the user never added it to the order.
+          if (startItem === PLAY_ORIGINAL) {
+            const lang = resolveMessageLanguage(msg);
+            units = [
+              {
+                text: msg.content.trim(),
+                lang,
+                rate: rateForLanguage(lang),
+                isOriginal: true,
+              },
+            ];
+          } else {
+            try {
+              const googleTarget = toGoogleLang(startItem);
+              const translated = await queryClient.fetchQuery({
+                queryKey: ["translation", googleTarget, msg.content.trim()],
+                queryFn: () =>
+                  translate({
+                    finalTranscriptProxy: msg.content.trim(),
+                    fromLang: "auto",
+                    toLang: googleTarget,
+                  }),
+                staleTime: Infinity,
+                gcTime: Infinity,
+              });
+              if (translated && translated !== "translation error") {
+                units = [
+                  {
+                    text: translated,
+                    lang: startItem,
+                    rate: rateForLanguage(startItem),
+                    isOriginal: false,
+                  },
+                ];
+              } else {
+                units = [];
+              }
+            } catch {
+              units = [];
+            }
+          }
+        }
+      }
       if (units.length === 0) return;
       setPlayingMsgId(msg.id);
       setCurrentWordIdx(null);
@@ -403,6 +523,7 @@ export default function Story() {
             `[story] play-one → msg=${msg.id} ${unit.isOriginal ? "original" : "translation"} lang=${unit.lang} rate=${unit.rate} chars=${unit.text.length}`,
           );
           setCurrentWordIdx(null);
+          setPlayingItem(unit.isOriginal ? PLAY_ORIGINAL : unit.lang);
           await voice.speak(unit.text, unit.lang, unit.rate, {
             onWord: unit.isOriginal
               ? ({ wordIndex }) => setCurrentWordIdx(wordIndex)
@@ -411,10 +532,20 @@ export default function Story() {
         }
       } finally {
         setPlayingMsgId((cur) => (cur === msg.id ? null : cur));
+        setPlayingItem(null);
         setCurrentWordIdx(null);
       }
     },
-    [playingMsgId, voice, buildPlayUnits, stopPlayingStory],
+    [
+      playingMsgId,
+      playingItem,
+      voice,
+      buildPlayUnits,
+      stopPlayingStory,
+      queryClient,
+      resolveMessageLanguage,
+      rateForLanguage,
+    ],
   );
 
   /*
@@ -684,23 +815,35 @@ export default function Story() {
 
   const saveEdit = async (messageId: number) => {
     if (!editDraft.trim()) return;
-    await updateMessage.mutateAsync({
-      messageId,
-      data: { content: editDraft.trim() },
-    });
-    queryClient.invalidateQueries({
-      queryKey: getListOpenrouterMessagesQueryKey(id),
-    });
-    setEditingId(null);
-    setEditDraft("");
+    try {
+      await updateMessage.mutateAsync({
+        messageId,
+        data: { content: editDraft.trim() },
+      });
+      queryClient.invalidateQueries({
+        queryKey: getListOpenrouterMessagesQueryKey(id),
+      });
+      setEditingId(null);
+      setEditDraft("");
+    } catch (err) {
+      console.error("Save edit failed:", err);
+      playSound("error");
+      setActionError(formatActionError("Could not save edit", err));
+    }
   };
 
   const handleDeleteMessage = async (messageId: number) => {
     if (!confirm("Delete this paragraph?")) return;
-    await deleteMessage.mutateAsync({ messageId });
-    queryClient.invalidateQueries({
-      queryKey: getListOpenrouterMessagesQueryKey(id),
-    });
+    try {
+      await deleteMessage.mutateAsync({ messageId });
+      queryClient.invalidateQueries({
+        queryKey: getListOpenrouterMessagesQueryKey(id),
+      });
+    } catch (err) {
+      console.error("Delete failed:", err);
+      playSound("error");
+      setActionError(formatActionError("Delete failed", err));
+    }
   };
 
   // Regenerate (rewrite) a single paragraph in place using AI completion.
@@ -729,6 +872,8 @@ export default function Story() {
     } catch (err) {
       console.error("Regenerate failed:", err);
       playSound("error");
+      // Surface the failure so the user sees more than just a beep.
+      setActionError(formatActionError("Regenerate failed", err));
     } finally {
       setRegeneratingMsgId(null);
     }
@@ -1049,17 +1194,30 @@ export default function Story() {
         </div>
       </header>
 
-      {/* Error banner */}
-      {streamError && (
-        <div className="mx-6 mt-4 flex items-start gap-3 px-4 py-3 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive font-sans text-sm">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          <span className="flex-1">{streamError}</span>
+      {/* Error banner — surfaces both streaming errors (AI completion,
+          message submit) AND imperative-action errors (regenerate,
+          delete, edit) so users actually see what went wrong instead of
+          just hearing the error sound. */}
+      {displayedError && (
+        <div
+          className="mx-6 mt-4 flex items-start gap-3 px-4 py-3 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive font-sans text-sm"
+          data-testid="error-banner"
+          role="alert"
+        >
+          <AlertCircle className="w-5 h-5 mt-0.5 shrink-0" />
+          <span className="flex-1 whitespace-pre-wrap break-words">
+            {displayedError}
+          </span>
           <button
-            onClick={clearError}
+            onClick={() => {
+              clearError();
+              setActionError(null);
+            }}
             className="shrink-0 hover:opacity-70 transition-opacity"
             aria-label="Dismiss error"
+            data-testid="button-dismiss-error"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
       )}
@@ -1140,17 +1298,54 @@ export default function Story() {
                 </div>
               ) : (
                 <div className="relative">
-                  <MessageBody
-                    text={msg.content}
-                    highlightWord={
-                      playingMsgId === msg.id ? currentWordIdx : null
+                  {/*
+                    Wrap the original-text body in a clickable box so
+                    tapping the paragraph starts playback from the
+                    original (skipping any translations earlier in the
+                    queue). When the original is the live unit it gets
+                    a colored border that matches the translated-line
+                    treatment, so the user can always see what's audible.
+                  */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handlePlayMessage(msg, PLAY_ORIGINAL)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handlePlayMessage(msg, PLAY_ORIGINAL);
+                      }
+                    }}
+                    aria-label="Play this passage from the original"
+                    data-testid={`message-original-${msg.id}`}
+                    data-playing={
+                      playingMsgId === msg.id && playingItem === PLAY_ORIGINAL
+                        ? "true"
+                        : undefined
                     }
-                  />
+                    className={cn(
+                      "cursor-pointer rounded-r border-l-2 pl-3 -ml-3 transition-colors hover:bg-muted/30",
+                      playingMsgId === msg.id && playingItem === PLAY_ORIGINAL
+                        ? "border-primary bg-primary/5 ring-1 ring-primary/40"
+                        : "border-transparent",
+                    )}
+                  >
+                    <MessageBody
+                      text={msg.content}
+                      highlightWord={
+                        playingMsgId === msg.id ? currentWordIdx : null
+                      }
+                    />
+                  </div>
                   {settings.viewLanguages.map((lang) => (
                     <TranslatedLine
                       key={lang}
                       text={msg.content}
                       toLang={lang}
+                      isPlaying={
+                        playingMsgId === msg.id && playingItem === lang
+                      }
+                      onClick={() => handlePlayMessage(msg, lang)}
                     />
                   ))}
                   {/*
@@ -1207,9 +1402,9 @@ export default function Story() {
                       )}
                     >
                       {playingMsgId === msg.id ? (
-                        <StopCircle className="w-3.5 h-3.5" />
+                        <StopCircle className="w-5 h-5" />
                       ) : (
-                        <Volume2 className="w-3.5 h-3.5" />
+                        <Volume2 className="w-5 h-5" />
                       )}
                     </button>
                     <button
@@ -1218,7 +1413,7 @@ export default function Story() {
                       data-testid={`button-edit-message-${msg.id}`}
                       className="text-muted-foreground hover:text-primary p-1 rounded"
                     >
-                      <Pencil className="w-3.5 h-3.5" />
+                      <Pencil className="w-5 h-5" />
                     </button>
                     <button
                       onClick={() => handleRegenerateMessage(msg.id)}
@@ -1229,9 +1424,9 @@ export default function Story() {
                       className="text-muted-foreground hover:text-primary p-1 rounded disabled:opacity-30"
                     >
                       {regeneratingMsgId === msg.id ? (
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <RefreshCw className="w-5 h-5 animate-spin" />
                       ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
+                        <Sparkles className="w-5 h-5" />
                       )}
                     </button>
                     <button
@@ -1241,7 +1436,7 @@ export default function Story() {
                       data-testid={`button-delete-message-${msg.id}`}
                       className="text-muted-foreground hover:text-destructive p-1 rounded disabled:opacity-30"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-5 h-5" />
                     </button>
                   </div>
                 </div>

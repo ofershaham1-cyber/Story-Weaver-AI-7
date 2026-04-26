@@ -62,6 +62,62 @@ function getDefaultModel(cfg: AppConfig = loadConfig()): string {
   );
 }
 
+/**
+ * Emit a single log line summarising what we're about to send to
+ * OpenRouter. We trim the messages array to a head/tail preview so the
+ * shape and the most-recent turn are visible without dumping kilobytes
+ * of conversation history into the log every request.
+ */
+function logOpenRouterRequest(
+  source: string,
+  payload: {
+    model: string;
+    max_tokens?: number;
+    temperature?: number | undefined;
+    stream?: boolean;
+    messages: Array<{ role: string; content: string }>;
+  },
+): void {
+  const totalChars = payload.messages.reduce(
+    (n, m) => n + (m.content?.length ?? 0),
+    0,
+  );
+  const PREVIEW_HEAD = 2;
+  const PREVIEW_TAIL = 2;
+  const PREVIEW_CHARS = 240;
+  const trimMsg = (m: { role: string; content: string }) => ({
+    role: m.role,
+    content:
+      (m.content ?? "").length > PREVIEW_CHARS
+        ? (m.content ?? "").slice(0, PREVIEW_CHARS) +
+          `…(+${(m.content ?? "").length - PREVIEW_CHARS} chars)`
+        : m.content,
+  });
+  let messagesPreview: unknown;
+  if (payload.messages.length <= PREVIEW_HEAD + PREVIEW_TAIL) {
+    messagesPreview = payload.messages.map(trimMsg);
+  } else {
+    messagesPreview = [
+      ...payload.messages.slice(0, PREVIEW_HEAD).map(trimMsg),
+      `…(+${payload.messages.length - PREVIEW_HEAD - PREVIEW_TAIL} more)`,
+      ...payload.messages.slice(-PREVIEW_TAIL).map(trimMsg),
+    ];
+  }
+  logger.info(
+    {
+      source,
+      model: payload.model,
+      max_tokens: payload.max_tokens,
+      temperature: payload.temperature,
+      stream: payload.stream ?? false,
+      messageCount: payload.messages.length,
+      totalChars,
+      messages: messagesPreview,
+    },
+    "openrouter request",
+  );
+}
+
 const router: IRouter = Router();
 
 /**
@@ -272,17 +328,25 @@ router.post(
     const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
 
     try {
+      const streamMessages = [
+        {
+          role: "system" as const,
+          content: `You are a collaborative storytelling AI friend. The user and you are writing a story together, taking turns. Write exactly one new creative paragraph that continues the story forward. IMPORTANT: Do not repeat, restate, or paraphrase anything that has already been written — only add brand-new content that hasn't appeared yet. Do not summarize or conclude the story — leave room for the user to continue. Be imaginative and engaging. Your response must be at most ${maxWords} words long — stop at a natural sentence boundary within that limit.`,
+        },
+        ...chatHistory,
+      ];
+      logOpenRouterRequest("send-message-stream", {
+        model: effectiveModel,
+        max_tokens: effectiveMaxTokens,
+        temperature: temperature ?? undefined,
+        stream: true,
+        messages: streamMessages,
+      });
       const stream = await client.chat.completions.create({
         model: effectiveModel,
         max_tokens: effectiveMaxTokens,
         temperature: temperature ?? undefined,
-        messages: [
-          {
-            role: "system",
-            content: `You are a collaborative storytelling AI friend. The user and you are writing a story together, taking turns. Write exactly one new creative paragraph that continues the story forward. IMPORTANT: Do not repeat, restate, or paraphrase anything that has already been written — only add brand-new content that hasn't appeared yet. Do not summarize or conclude the story — leave room for the user to continue. Be imaginative and engaging. Your response must be at most ${maxWords} words long — stop at a natural sentence boundary within that limit.`,
-          },
-          ...chatHistory,
-        ],
+        messages: streamMessages,
         stream: true,
       });
 
@@ -410,6 +474,10 @@ router.post(
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const start = Date.now();
       try {
+        logOpenRouterRequest(`ai-turn (attempt ${attempt}/${maxAttempts})`, {
+          ...requestPayload,
+          stream: false,
+        });
         const completion = await client.chat.completions.create({
           ...requestPayload,
           stream: false,
@@ -651,6 +719,10 @@ router.post(
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        logOpenRouterRequest(`regenerate (attempt ${attempt}/${maxAttempts})`, {
+          ...requestPayload,
+          stream: false,
+        });
         const completion = await client.chat.completions.create({
           ...requestPayload,
           stream: false,
@@ -726,17 +798,24 @@ router.post("/openrouter/completions", async (req, res): Promise<void> => {
   const effectiveMaxTokens = Math.ceil(maxWords / 0.75);
 
   try {
+    const completionsMessages = [
+      {
+        role: "system" as const,
+        content: `You are a collaborative storytelling AI friend. Write exactly one new creative paragraph that continues the story forward. Your response must be at most ${maxWords} words long — stop at a natural sentence boundary within that limit.`,
+      },
+      { role: "user" as const, content: userContent },
+    ];
+    logOpenRouterRequest("completions", {
+      model: effectiveModel,
+      max_tokens: effectiveMaxTokens,
+      temperature: temperature ?? undefined,
+      messages: completionsMessages,
+    });
     const completion = await client.chat.completions.create({
       model: effectiveModel,
       max_tokens: effectiveMaxTokens,
       temperature: temperature ?? undefined,
-      messages: [
-        {
-          role: "system",
-          content: `You are a collaborative storytelling AI friend. Write exactly one new creative paragraph that continues the story forward. Your response must be at most ${maxWords} words long — stop at a natural sentence boundary within that limit.`,
-        },
-        { role: "user", content: userContent },
-      ],
+      messages: completionsMessages,
     });
 
     const answer = completion.choices[0]?.message?.content ?? "";
